@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme {
+  /* Primary — Lego Red */
+  --color-primary: #E3000B;
+  --color-primary-hover: #C8000A;
+
+  /* Accent — Lego Yellow */
+  --color-accent: #FFD500;
+  --color-accent-hover: #E6C000;
+
+  /* Neutrals — Warm grays (baseplate feel) */
+  --color-bg: #1A1A1A;
+  --color-surface: #2A2A2A;
+  --color-surface-elevated: #3A3A3A;
+  --color-text-primary: #F5F5F5;
+  --color-text-secondary: #A0A0A0;
+  --color-border: #444444;
+
+  /* Status */
+  --color-draft: #FFD500;
+  --color-review: #4A90D9;
+  --color-producing: #FF8C00;
+  --color-complete: #4CAF50;
+  --color-error: #E3000B;
+
+  /* Green light */
+  --color-greenlight: #00C853;
+  --color-greenlight-hover: #00A844;
+}
+
+@font-face {
+  font-family: 'Fredoka';
+  src: url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap');
+}
+
+body {
+  font-family: 'DM Sans', 'Outfit', system-ui, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Fredoka', 'Nunito', sans-serif;
+}
