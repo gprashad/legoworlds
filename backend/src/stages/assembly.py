@@ -55,21 +55,19 @@ async def _download_photos(scene_id: str, work_dir: str) -> list[str]:
 
 def _escape_drawtext(text: str) -> str:
     """Escape text for FFmpeg drawtext filter."""
-    return text.replace("\\", "\\\\").replace("'", "'\\\\\\''").replace(":", "\\:").replace("%", "%%")
+    return text.replace("\\", "\\\\").replace("'", "\u2019").replace(":", "\\:").replace("%", "%%").replace('"', '\\"')
 
 
 def _create_title_card(text: str, output_path: str, duration: float = 3.0):
     """Create a title card video with text on dark background."""
     escaped = _escape_drawtext(text)
+    # Use a single lavfi source with both video and audio to avoid timestamp issues
     _run_ffmpeg([
         "-f", "lavfi",
-        "-i", f"color=c=0x1A1A1A:s={RESOLUTION}:d={duration}:r={FPS}",
-        "-f", "lavfi",
-        "-i", "anullsrc=r=44100:cl=stereo",
+        "-i", f"color=c=0x1A1A1A:s={RESOLUTION}:r={FPS}:d={duration},format=yuv420p,drawtext=text='{escaped}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf[v];anullsrc=r=44100:cl=stereo[a]",
+        "-map", "[v]", "-map", "[a]",
         "-t", str(duration),
-        "-vf", f"drawtext=text='{escaped}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "-c:v", "libx264", "-c:a", "aac",
-        "-shortest",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
         output_path,
     ], desc=f"title card: {text[:30]}")
 
