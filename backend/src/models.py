@@ -32,7 +32,7 @@ class JobStatus(str, Enum):
 class SceneCreate(BaseModel):
     title: str = "Untitled Scene"
     backstory: Optional[str] = None
-    director_name: str = "Jackson"
+    director_name: str = "Cary"
     movie_style: str = "cinematic"
 
 

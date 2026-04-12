@@ -17,7 +17,7 @@ create table scenes (
   title text not null default 'Untitled Scene',
   backstory text,
   status text not null default 'draft',
-  director_name text default 'Cary',
+  director_name text default 'Jackson',
   movie_style text default 'cinematic',
   music_mood text default 'auto',
   scene_bible jsonb,

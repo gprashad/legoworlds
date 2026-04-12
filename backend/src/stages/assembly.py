@@ -194,7 +194,7 @@ async def assemble_movie(
         photo_paths = await _download_photos(scene_id, work_dir)
 
         segments = []
-        director = screenplay.get("credits", {}).get("directed_by", "Jackson")
+        director = screenplay.get("credits", {}).get("directed_by", "Cary")
 
         # --- Title cards ---
         logger.info(f"[{scene_id}] Creating title cards...")

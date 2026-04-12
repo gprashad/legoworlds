@@ -30,7 +30,7 @@ async def run_analysis_and_screenplay(scene_id: str, job_id: str):
     try:
         scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
         backstory = scene.get("backstory", "")
-        director_name = scene.get("director_name", "Jackson")
+        director_name = scene.get("director_name", "Cary")
 
         # --- Stage 1: Scene Analysis ---
         _update_scene(scene_id, status="analyzing")
@@ -79,7 +79,7 @@ async def run_screenplay_revision(scene_id: str, job_id: str, feedback: str):
     try:
         scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
         backstory = scene.get("backstory", "")
-        director_name = scene.get("director_name", "Jackson")
+        director_name = scene.get("director_name", "Cary")
         scene_bible = scene.get("scene_bible")
 
         if not scene_bible:
