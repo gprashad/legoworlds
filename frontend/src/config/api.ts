@@ -3,14 +3,18 @@ import { supabase } from './supabase'
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
-  const { data: { session } } = await supabase.auth.getSession()
-  if (!session?.access_token) {
-    throw new Error('Not authenticated')
-  }
-  return {
-    'Authorization': `Bearer ${session.access_token}`,
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`
+    }
+  } catch {
+    // No auth — dev mode, backend will use dev user
+  }
+  return headers
 }
 
 export async function apiFetch<T = unknown>(
