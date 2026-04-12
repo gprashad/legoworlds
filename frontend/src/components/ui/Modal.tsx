@@ -21,9 +21,13 @@ export function Modal({ open, onClose, children }: ModalProps) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="bg-surface rounded-xl border border-border p-6 max-w-md w-full shadow-xl">
+      <div
+        className="bg-surface rounded-xl border border-border p-6 max-w-md w-full shadow-xl"
+        onMouseDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+      >
         {children}
       </div>
     </div>
