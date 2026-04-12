@@ -121,6 +121,18 @@ export function SceneWorkspace() {
           <StatusBadge status={scene.status} />
         </div>
 
+        {/* Link to movie if complete */}
+        {(scene.status === 'complete' || scene.status === 'published') && scene.final_video_url && (
+          <Link
+            to={`/scenes/${id}/movie`}
+            className="block bg-complete/10 rounded-xl p-4 border border-complete/30 hover:border-complete transition-colors text-center"
+          >
+            <span className="text-complete font-semibold">
+              🎬 Watch Your Movie
+            </span>
+          </Link>
+        )}
+
         {/* Link to screenplay if it exists */}
         {hasScreenplay && (
           <Link

@@ -5,10 +5,12 @@ import { StatusBadge } from './StatusBadge'
 export function SceneCard({ scene }: { scene: Scene }) {
   const coverPhoto = scene.media?.find(m => m.file_type === 'photo')
   const photoCount = scene.media?.filter(m => m.file_type === 'photo').length || 0
+  const isComplete = scene.status === 'complete' || scene.status === 'published'
+  const linkTo = isComplete ? `/scenes/${scene.id}/movie` : `/scenes/${scene.id}`
 
   return (
     <Link
-      to={`/scenes/${scene.id}`}
+      to={linkTo}
       className="block bg-surface rounded-xl overflow-hidden border border-border hover:border-accent/50 transition-all hover:scale-[1.02] no-underline"
     >
       <div className="aspect-[4/3] bg-surface-elevated flex items-center justify-center overflow-hidden">

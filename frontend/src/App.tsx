@@ -4,6 +4,7 @@ import { LoginPage } from './pages/LoginPage'
 import { ScenesPage } from './pages/ScenesPage'
 import { SceneWorkspace } from './pages/SceneWorkspace'
 import { ScreenplayReview } from './pages/ScreenplayReview'
+import { MoviePlayer } from './pages/MoviePlayer'
 
 export default function App() {
   return (
@@ -31,6 +32,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <ScreenplayReview />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/scenes/:id/movie"
+          element={
+            <ProtectedRoute>
+              <MoviePlayer />
             </ProtectedRoute>
           }
         />

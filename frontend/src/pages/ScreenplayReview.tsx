@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Header } from '../components/layout/Header'
 import { StoryboardCard } from '../components/screenplay/StoryboardCard'
 import { NarratorCard } from '../components/screenplay/NarratorCard'
@@ -13,6 +13,7 @@ import type { Screenplay } from '../types/screenplay'
 
 export function ScreenplayReview() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { fetchScene } = useScenes()
   const pipeline = usePipeline(id || '')
   const [scene, setScene] = useState<Scene | null>(null)
@@ -47,8 +48,7 @@ export function ScreenplayReview() {
     }
     if (jobStatus === 'complete') {
       pipeline.stopPolling()
-      loadScene()
-      // Navigate to movie player once we have it, for now reload scene
+      navigate(`/scenes/${id}/movie`)
     }
   }, [pipeline.status?.job?.status]) // eslint-disable-line react-hooks/exhaustive-deps
 
