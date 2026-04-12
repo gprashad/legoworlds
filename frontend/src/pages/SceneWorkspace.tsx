@@ -24,6 +24,7 @@ export function SceneWorkspace() {
   const [editingTitle, setEditingTitle] = useState(false)
   const [triggering, setTriggering] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [suggesting, setSuggesting] = useState(false)
 
   const loadScene = useCallback(async () => {
     if (!id) return
@@ -60,6 +61,24 @@ export function SceneWorkspace() {
   const handleDeleteMedia = async (mediaId: string) => {
     await deleteMedia(mediaId)
     setScene(prev => prev ? { ...prev, media: prev.media.filter(m => m.id !== mediaId) } : prev)
+  }
+
+  const handleSuggestBackstory = async () => {
+    if (!id) return
+    setSuggesting(true)
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/scenes/${id}/suggest-backstory`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        const suggestion = data.suggestion
+        await updateScene(id, { backstory: suggestion })
+        setScene(prev => prev ? { ...prev, backstory: suggestion } : prev)
+      }
+    } catch {
+      // silently fail
+    } finally {
+      setSuggesting(false)
+    }
   }
 
   const handleMakeMovie = async () => {
@@ -207,11 +226,20 @@ export function SceneWorkspace() {
         </section>
 
         {/* Backstory section */}
-        <section className="bg-surface rounded-xl p-5 border border-border">
+        <section className="bg-surface rounded-xl p-5 border border-border space-y-3">
           <BackstoryEditor
             value={scene.backstory || ''}
             onChange={handleBackstoryChange}
           />
+          {photoCount > 0 && (
+            <button
+              onClick={handleSuggestBackstory}
+              disabled={suggesting}
+              className="text-sm px-4 py-2 bg-accent/10 text-accent border border-accent/30 rounded-lg hover:bg-accent/20 transition-colors disabled:opacity-50"
+            >
+              {suggesting ? 'Looking at your photos...' : '✨ Suggest a backstory from my photos'}
+            </button>
+          )}
         </section>
 
         {/* Movie settings */}

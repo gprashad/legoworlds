@@ -6,6 +6,7 @@ from src.api.routes_scenes import router as scenes_router
 from src.api.routes_media import router as media_router
 from src.api.routes_pipeline import router as pipeline_router
 from src.api.routes_intake import router as intake_router
+from src.api.routes_suggest import router as suggest_router
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ app.include_router(scenes_router)
 app.include_router(media_router)
 app.include_router(pipeline_router)
 app.include_router(intake_router)
+app.include_router(suggest_router)
 
 
 @app.get("/health")

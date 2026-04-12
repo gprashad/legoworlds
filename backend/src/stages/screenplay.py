@@ -2,6 +2,7 @@ import json
 import logging
 from pathlib import Path
 import anthropic
+from src.utils.json_repair import repair_and_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +90,6 @@ Return ONLY the JSON object, no markdown fences or explanation."""
     )
 
     response_text = message.content[0].text.strip()
-
-    # Strip markdown fences if present
-    if response_text.startswith("```"):
-        lines = response_text.split("\n")
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        response_text = "\n".join(lines)
-
-    screenplay = json.loads(response_text)
+    screenplay = repair_and_parse_json(response_text)
     logger.info(f"Screenplay generated: {screenplay.get('title', 'untitled')} — {screenplay.get('total_scenes', 0)} scenes")
     return screenplay

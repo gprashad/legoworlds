@@ -5,6 +5,7 @@ from pathlib import Path
 import anthropic
 from src.supabase_client import get_supabase
 from src.config import SUPABASE_STORAGE_BUCKET
+from src.utils.json_repair import repair_and_parse_json
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +114,6 @@ Return ONLY the JSON object, no markdown fences or explanation.""",
     )
 
     response_text = message.content[0].text.strip()
-
-    # Strip markdown fences if present
-    if response_text.startswith("```"):
-        lines = response_text.split("\n")
-        lines = lines[1:]  # remove opening fence
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        response_text = "\n".join(lines)
-
-    scene_bible = json.loads(response_text)
+    scene_bible = repair_and_parse_json(response_text)
     logger.info(f"Scene analysis complete: {scene_bible.get('title', 'untitled')}")
     return scene_bible
