@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { Header } from '../components/layout/Header'
 import { StoryboardCard } from '../components/screenplay/StoryboardCard'
 import { NarratorCard } from '../components/screenplay/NarratorCard'
@@ -13,7 +13,6 @@ import type { Screenplay } from '../types/screenplay'
 
 export function ScreenplayReview() {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
   const { fetchScene } = useScenes()
   const pipeline = usePipeline(id || '')
   const [scene, setScene] = useState<Scene | null>(null)
@@ -32,19 +31,24 @@ export function ScreenplayReview() {
     pipeline.fetchStatus()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // If still analyzing, poll for status and reload scene when done
+  // If analyzing or producing, poll for status
   useEffect(() => {
-    if (scene?.status === 'analyzing') {
+    if (scene?.status === 'analyzing' || scene?.status === 'producing' || scene?.status === 'assembling' || scene?.status === 'approved') {
       pipeline.startPolling()
     }
   }, [scene?.status]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When pipeline finishes, reload scene to get screenplay
+  // When pipeline finishes, reload scene
   useEffect(() => {
     const jobStatus = pipeline.status?.job?.status
     if (jobStatus === 'awaiting_approval' || jobStatus === 'failed') {
       pipeline.stopPolling()
       loadScene()
+    }
+    if (jobStatus === 'complete') {
+      pipeline.stopPolling()
+      loadScene()
+      // Navigate to movie player once we have it, for now reload scene
     }
   }, [pipeline.status?.job?.status]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -56,8 +60,10 @@ export function ScreenplayReview() {
   const handleGreenlight = async () => {
     const ok = await pipeline.greenlight()
     if (ok) {
-      // For now, navigate back to workspace. Production comes in Phase 4.
-      navigate(`/scenes/${id}`)
+      // Greenlight now triggers production — start polling
+      setScene(prev => prev ? { ...prev, status: 'producing' } : prev)
+      pipeline.fetchStatus()
+      pipeline.startPolling()
     }
   }
 
@@ -82,6 +88,9 @@ export function ScreenplayReview() {
   }
 
   const isAnalyzing = scene.status === 'analyzing'
+  const isProducing = scene.status === 'producing' || scene.status === 'assembling' || scene.status === 'approved'
+  const isComplete = scene.status === 'complete'
+  const isReviewable = scene.status === 'screenplay_review'
   const screenplay = scene.screenplay as Screenplay | null
 
   return (
@@ -94,13 +103,36 @@ export function ScreenplayReview() {
             ← {scene.title}
           </Link>
           <span className="text-sm font-semibold text-review uppercase tracking-wider">
-            Screenplay Review
+            {isProducing ? 'Production' : isComplete ? 'Complete' : 'Screenplay Review'}
           </span>
         </div>
 
-        {/* Progress tracker while analyzing */}
-        {isAnalyzing && pipeline.status && (
+        {/* Progress tracker while analyzing or producing */}
+        {(isAnalyzing || isProducing) && pipeline.status && (
           <ProgressTracker status={pipeline.status} />
+        )}
+
+        {/* Movie complete banner */}
+        {isComplete && scene.final_video_url && (
+          <div className="bg-complete/10 border border-complete rounded-xl p-6 text-center space-y-4">
+            <span className="text-5xl block">🎬</span>
+            <h2 className="text-xl font-bold text-complete">Your movie is ready!</h2>
+            <div className="space-y-3">
+              <video
+                src={scene.final_video_url}
+                controls
+                className="w-full rounded-lg"
+                poster=""
+              />
+              <a
+                href={scene.final_video_url}
+                download
+                className="inline-block px-6 py-3 bg-accent text-black rounded-xl font-semibold hover:bg-accent-hover transition-colors"
+              >
+                Download Movie
+              </a>
+            </div>
+          </div>
         )}
 
         {/* Error */}
@@ -140,20 +172,23 @@ export function ScreenplayReview() {
               <p>Produced by <span className="text-text-primary">{screenplay.credits.produced_by}</span></p>
             </div>
 
-            {/* Feedback + Green Light */}
-            <FeedbackForm onSubmit={handleRevise} disabled={pipeline.polling} />
-
-            <div className="space-y-2">
-              <GreenLightButton onClick={handleGreenlight} disabled={pipeline.polling} />
-              <p className="text-center text-xs text-text-secondary">
-                Estimated production time: ~12 minutes
-              </p>
-            </div>
+            {/* Feedback + Green Light — only during review */}
+            {isReviewable && (
+              <>
+                <FeedbackForm onSubmit={handleRevise} disabled={pipeline.polling} />
+                <div className="space-y-2">
+                  <GreenLightButton onClick={handleGreenlight} disabled={pipeline.polling} />
+                  <p className="text-center text-xs text-text-secondary">
+                    Estimated production time: ~10-15 minutes
+                  </p>
+                </div>
+              </>
+            )}
           </>
         )}
 
         {/* No screenplay yet and not analyzing */}
-        {!screenplay && !isAnalyzing && (
+        {!screenplay && !isAnalyzing && !isProducing && (
           <div className="text-center py-20 space-y-4">
             <span className="text-5xl block">🎬</span>
             <p className="text-text-secondary">No screenplay yet. Go back and hit "Make My Movie"!</p>

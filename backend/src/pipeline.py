@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from src.supabase_client import get_supabase
 from src.stages.scene_analysis import analyze_scene
 from src.stages.screenplay import generate_screenplay
+from src.stages.production import generate_scene_videos, generate_scene_audio
+from src.stages.assembly import assemble_movie
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,6 @@ async def run_analysis_and_screenplay(scene_id: str, job_id: str):
     sb = get_supabase()
 
     try:
-        # Get scene data
         scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
         backstory = scene.get("backstory", "")
         director_name = scene.get("director_name", "Jackson")
@@ -108,6 +109,81 @@ async def run_screenplay_revision(scene_id: str, job_id: str, feedback: str):
 
     except Exception as e:
         logger.error(f"[{scene_id}] Revision failed: {e}")
+        _update_scene(scene_id, status="failed")
+        _update_job(job_id, status="failed", error=str(e))
+        raise
+
+
+async def run_production(scene_id: str, job_id: str):
+    """Run video generation + voice generation + assembly as a background task."""
+    sb = get_supabase()
+
+    try:
+        scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
+        screenplay = scene.get("screenplay")
+        scene_bible = scene.get("scene_bible")
+
+        if not screenplay or not scene_bible:
+            raise ValueError("Missing screenplay or scene bible")
+
+        total_scenes = len(screenplay.get("scenes", []))
+
+        # --- Stage 3: Video Generation ---
+        _update_scene(scene_id, status="producing")
+        _update_job(job_id, status="producing", current_stage="video_generation", progress_pct=5)
+        logger.info(f"[{scene_id}] Starting video generation...")
+
+        def on_video_progress(done: int, total: int):
+            pct = 5 + int((done / total) * 45)  # 5-50%
+            _update_job(job_id, progress_pct=pct, current_stage=f"video_scene_{done}_of_{total}")
+
+        video_paths = await generate_scene_videos(scene_id, screenplay, on_progress=on_video_progress)
+        _update_job(job_id, progress_pct=50, stages_completed=["scene_analysis", "screenplay", "video_generation"])
+        logger.info(f"[{scene_id}] Video generation complete ({len(video_paths)} clips)")
+
+        # --- Stage 4: Voice Generation ---
+        _update_job(job_id, current_stage="voice_generation", progress_pct=55)
+        logger.info(f"[{scene_id}] Starting voice generation...")
+
+        audio_paths = await generate_scene_audio(scene_id, screenplay, scene_bible)
+        _update_job(
+            job_id, progress_pct=75,
+            stages_completed=["scene_analysis", "screenplay", "video_generation", "voice_generation"],
+        )
+        logger.info(f"[{scene_id}] Voice generation complete ({len(audio_paths)} files)")
+
+        # --- Stage 5: Assembly ---
+        _update_scene(scene_id, status="assembling")
+        _update_job(job_id, status="assembling", current_stage="assembly", progress_pct=80)
+        logger.info(f"[{scene_id}] Starting assembly...")
+
+        final_video_path, thumbnail_path = await assemble_movie(
+            scene_id, screenplay, video_paths, audio_paths,
+        )
+
+        # Get public URL for the final video
+        final_url = sb.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(final_video_path)
+
+        _update_scene(
+            scene_id,
+            status="complete",
+            final_video_url=final_url,
+        )
+        _update_job(
+            job_id,
+            status="complete",
+            current_stage="complete",
+            progress_pct=100,
+            stages_completed=[
+                "scene_analysis", "screenplay", "video_generation",
+                "voice_generation", "assembly",
+            ],
+            completed_at=_now(),
+        )
+        logger.info(f"[{scene_id}] Movie complete! URL: {final_url}")
+
+    except Exception as e:
+        logger.error(f"[{scene_id}] Production failed: {e}")
         _update_scene(scene_id, status="failed")
         _update_job(job_id, status="failed", error=str(e))
         raise

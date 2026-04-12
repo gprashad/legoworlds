@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from src.api.auth import get_current_user
 from src.supabase_client import get_supabase
-from src.pipeline import run_analysis_and_screenplay, run_screenplay_revision
+from src.pipeline import run_analysis_and_screenplay, run_screenplay_revision, run_production
 
 router = APIRouter(prefix="/api/scenes/{scene_id}", tags=["pipeline"])
 
@@ -80,9 +80,10 @@ async def revise_screenplay(
 @router.post("/greenlight")
 async def greenlight_screenplay(
     scene_id: str,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ):
-    """Approve screenplay and mark scene as approved for production."""
+    """Approve screenplay and trigger production pipeline."""
     scene = _get_scene_or_404(scene_id, user["sub"])
 
     if scene["status"] != "screenplay_review":
@@ -93,7 +94,10 @@ async def greenlight_screenplay(
     sb = get_supabase()
     sb.table("scenes").update({"status": "approved"}).eq("id", scene_id).execute()
 
-    return {"status": "approved", "message": "Screenplay approved! Production will begin soon."}
+    job_id = _create_job(scene_id)
+    background_tasks.add_task(run_production, scene_id, job_id)
+
+    return {"job_id": job_id, "status": "producing", "message": "Lights, camera, action! Production started."}
 
 
 @router.get("/status")
