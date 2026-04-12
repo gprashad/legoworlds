@@ -33,7 +33,7 @@ IMAP_SERVER = "imap.gmail.com"
 SMTP_SERVER = "smtp.gmail.com"
 INTAKE_EMAIL = os.getenv("INTAKE_EMAIL_ADDRESS", "")
 INTAKE_PASSWORD = os.getenv("INTAKE_EMAIL_APP_PASSWORD", "")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://legoworlds.netlify.app")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://legoworlds.ai")
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".webm", ".m4v"}
