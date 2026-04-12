@@ -53,15 +53,21 @@ async def _download_photos(scene_id: str, work_dir: str) -> list[str]:
     return photo_paths
 
 
+def _escape_drawtext(text: str) -> str:
+    """Escape text for FFmpeg drawtext filter."""
+    return text.replace("\\", "\\\\").replace("'", "'\\\\\\''").replace(":", "\\:").replace("%", "%%")
+
+
 def _create_title_card(text: str, output_path: str, duration: float = 3.0):
     """Create a title card video with text on dark background."""
+    escaped = _escape_drawtext(text)
     _run_ffmpeg([
         "-f", "lavfi",
         "-i", f"color=c=0x1A1A1A:s={RESOLUTION}:d={duration}:r={FPS}",
         "-f", "lavfi",
-        "-i", f"anullsrc=r=44100:cl=stereo",
+        "-i", "anullsrc=r=44100:cl=stereo",
         "-t", str(duration),
-        "-vf", f"drawtext=text='{text}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:font=sans",
+        "-vf", f"drawtext=text='{escaped}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "-c:v", "libx264", "-c:a", "aac",
         "-shortest",
         output_path,
