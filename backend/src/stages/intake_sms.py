@@ -29,7 +29,9 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://legoworlds.netlify.app")
 
-ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+ALLOWED_VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/webm", "video/x-m4v"}
+ALLOWED_CONTENT_TYPES = ALLOWED_IMAGE_TYPES | ALLOWED_VIDEO_TYPES
 
 
 async def process_incoming_sms(form_data: dict) -> dict:
@@ -92,10 +94,14 @@ async def process_incoming_sms(form_data: dict) -> dict:
                 continue
 
             data = res.content
+            is_video = content_type.startswith("video/")
+            file_type = "video" if is_video else "photo"
             ext = content_type.split("/")[-1]
             if ext == "jpeg":
                 ext = "jpg"
-            filename = f"photo_{i + 1}.{ext}"
+            if ext == "quicktime":
+                ext = "mov"
+            filename = f"{file_type}_{i + 1}.{ext}"
             storage_path = f"scenes/{scene_id}/input/{filename}"
 
             sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
@@ -107,7 +113,7 @@ async def process_incoming_sms(form_data: dict) -> dict:
             sb.table("scene_media").insert({
                 "scene_id": scene_id,
                 "file_url": public_url,
-                "file_type": "photo",
+                "file_type": file_type,
                 "file_name": filename,
                 "file_size_bytes": len(data),
                 "sort_order": i,

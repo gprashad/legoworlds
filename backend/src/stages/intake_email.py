@@ -35,7 +35,9 @@ INTAKE_EMAIL = os.getenv("INTAKE_EMAIL_ADDRESS", "")
 INTAKE_PASSWORD = os.getenv("INTAKE_EMAIL_APP_PASSWORD", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://legoworlds.netlify.app")
 
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".webm", ".m4v"}
+ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | ALLOWED_VIDEO_EXTENSIONS
 MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024  # 50MB
 
 
@@ -69,14 +71,14 @@ def _get_text_body(msg: email.message.Message) -> str:
     return ""
 
 
-def _get_image_attachments(msg: email.message.Message) -> list[dict]:
-    """Extract image attachments from email."""
+def _get_media_attachments(msg: email.message.Message) -> list[dict]:
+    """Extract image and video attachments from email."""
     attachments = []
     for part in msg.walk():
         content_type = part.get_content_type()
         disposition = str(part.get("Content-Disposition", ""))
 
-        if not content_type.startswith("image/"):
+        if not (content_type.startswith("image/") or content_type.startswith("video/")):
             continue
 
         filename = part.get_filename()
@@ -93,10 +95,12 @@ def _get_image_attachments(msg: email.message.Message) -> list[dict]:
 
         data = part.get_payload(decode=True)
         if data and len(data) <= MAX_ATTACHMENT_SIZE:
+            file_type = "video" if content_type.startswith("video/") else "photo"
             attachments.append({
                 "filename": filename,
                 "content_type": content_type,
                 "data": data,
+                "file_type": file_type,
             })
 
     return attachments
@@ -165,10 +169,10 @@ async def poll_inbox() -> int:
                 from_addr = email.utils.parseaddr(msg["From"])[1]
                 subject = _decode_header_value(msg.get("Subject", "Untitled Scene"))
                 body = _get_text_body(msg)
-                attachments = _get_image_attachments(msg)
+                attachments = _get_media_attachments(msg)
 
                 if not attachments:
-                    logger.info(f"Skipping email from {from_addr}: no image attachments")
+                    logger.info(f"Skipping email from {from_addr}: no media attachments")
                     # Mark as read anyway
                     mail.store(msg_id, "+FLAGS", "\\Seen")
                     continue
@@ -197,17 +201,19 @@ async def poll_inbox() -> int:
                     sb.table("scene_media").insert({
                         "scene_id": scene_id,
                         "file_url": public_url,
-                        "file_type": "photo",
+                        "file_type": att["file_type"],
                         "file_name": att["filename"],
                         "file_size_bytes": len(att["data"]),
                         "sort_order": i,
                         "source": "email",
                     }).execute()
 
-                logger.info(f"Created scene '{subject}' from email ({len(attachments)} photos)")
+                photo_count = sum(1 for a in attachments if a["file_type"] == "photo")
+                video_count = sum(1 for a in attachments if a["file_type"] == "video")
+                logger.info(f"Created scene '{subject}' from email ({photo_count} photos, {video_count} videos)")
 
                 # Send reply
-                _send_reply(from_addr, subject, scene_id, len(attachments))
+                _send_reply(from_addr, subject, scene_id, photo_count + video_count)
 
                 # Mark as read
                 mail.store(msg_id, "+FLAGS", "\\Seen")
