@@ -86,8 +86,8 @@ export function MoviePlayer() {
         </div>
 
         {/* Still producing */}
-        {isProducing && pipeline.status && (
-          <ProgressTracker status={pipeline.status} />
+        {isProducing && (
+          <ProgressTracker status={pipeline.status} mode="production" />
         )}
 
         {/* Movie ready */}

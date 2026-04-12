@@ -108,8 +108,11 @@ export function ScreenplayReview() {
         </div>
 
         {/* Progress tracker while analyzing or producing */}
-        {(isAnalyzing || isProducing) && pipeline.status && (
-          <ProgressTracker status={pipeline.status} />
+        {isAnalyzing && (
+          <ProgressTracker status={pipeline.status} mode="analysis" />
+        )}
+        {isProducing && (
+          <ProgressTracker status={pipeline.status} mode="production" />
         )}
 
         {/* Movie complete banner */}
