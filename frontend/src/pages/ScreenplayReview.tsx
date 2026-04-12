@@ -96,7 +96,7 @@ export function ScreenplayReview() {
   return (
     <div className="min-h-screen bg-bg">
       <Header />
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
         {/* Title bar */}
         <div className="flex items-center justify-between">
           <Link to={`/scenes/${id}`} className="text-text-secondary hover:text-text-primary transition-colors">

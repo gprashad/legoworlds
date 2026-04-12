@@ -17,7 +17,7 @@ export function LoginPage() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-bg px-4">
       <div className="text-center space-y-6">
-        <h1 className="text-5xl font-bold text-accent tracking-tight">LEGO WORLDS</h1>
+        <h1 className="text-4xl sm:text-5xl font-bold text-accent tracking-tight">LEGO WORLDS</h1>
         <p className="text-text-secondary text-lg">Where your builds come alive</p>
 
         <button

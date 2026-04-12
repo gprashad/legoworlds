@@ -20,8 +20,8 @@ export function ScenesPage() {
   return (
     <div className="min-h-screen bg-bg">
       <Header />
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-8">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <div className="flex items-center justify-between mb-6 sm:mb-8">
           <h2 className="text-2xl font-bold text-text-primary">My Scenes</h2>
           <button
             onClick={handleNewScene}

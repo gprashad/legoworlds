@@ -5,6 +5,8 @@ import { MediaGrid } from '../components/workspace/MediaGrid'
 import { MediaUploader } from '../components/workspace/MediaUploader'
 import { BackstoryEditor } from '../components/workspace/BackstoryEditor'
 import { MakeMovieButton } from '../components/workspace/MakeMovieButton'
+import { VoiceoverRecorder } from '../components/workspace/VoiceoverRecorder'
+import { Modal } from '../components/ui/Modal'
 import { StatusBadge } from '../components/scenes/StatusBadge'
 import { useScenes } from '../hooks/useScenes'
 import { useMediaUpload } from '../hooks/useMediaUpload'
@@ -14,13 +16,14 @@ import type { Scene } from '../types/scene'
 export function SceneWorkspace() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { fetchScene, updateScene } = useScenes()
+  const { fetchScene, updateScene, deleteScene } = useScenes()
   const { uploadMedia, deleteMedia, uploading } = useMediaUpload(id || '')
   const pipeline = usePipeline(id || '')
   const [scene, setScene] = useState<Scene | null>(null)
   const [loading, setLoading] = useState(true)
   const [editingTitle, setEditingTitle] = useState(false)
   const [triggering, setTriggering] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
 
   const loadScene = useCallback(async () => {
     if (!id) return
@@ -95,7 +98,7 @@ export function SceneWorkspace() {
   return (
     <div className="min-h-screen bg-bg">
       <Header />
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-8">
+      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
         {/* Title bar */}
         <div className="flex items-center gap-3">
           <Link to="/scenes" className="text-text-secondary hover:text-text-primary transition-colors">
@@ -119,7 +122,42 @@ export function SceneWorkspace() {
             </h1>
           )}
           <StatusBadge status={scene.status} />
+          <div className="ml-auto">
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              className="text-text-secondary hover:text-error text-sm transition-colors"
+            >
+              Delete
+            </button>
+          </div>
         </div>
+
+        {/* Delete confirmation modal */}
+        <Modal open={showDeleteModal} onClose={() => setShowDeleteModal(false)}>
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-text-primary">Delete scene?</h3>
+            <p className="text-sm text-text-secondary">
+              This will permanently delete "{scene.title}" and all its photos, screenplay, and movie. This can't be undone.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                className="px-4 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-text-primary hover:border-accent transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  const ok = await deleteScene(id!)
+                  if (ok) navigate('/scenes')
+                }}
+                className="px-4 py-2 bg-error text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </Modal>
 
         {/* Link to movie if complete */}
         {(scene.status === 'complete' || scene.status === 'published') && scene.final_video_url && (
@@ -157,6 +195,15 @@ export function SceneWorkspace() {
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Media</h2>
           <MediaGrid media={scene.media} onDelete={handleDeleteMedia} />
           <MediaUploader onFilesSelected={handleFilesSelected} uploading={uploading} />
+          <VoiceoverRecorder
+            sceneId={id || ''}
+            existingUrl={scene.voiceover_url}
+            onRecorded={(url) => {
+              updateScene(id!, { backstory: scene.backstory || '' })
+              setScene(prev => prev ? { ...prev, voiceover_url: url } : prev)
+            }}
+            onRemoved={() => setScene(prev => prev ? { ...prev, voiceover_url: null } : prev)}
+          />
         </section>
 
         {/* Backstory section */}
@@ -170,7 +217,7 @@ export function SceneWorkspace() {
         {/* Movie settings */}
         <section className="bg-surface rounded-xl p-5 border border-border space-y-4">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Movie Settings</h2>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-text-secondary mb-1">Director credit</label>
               <input

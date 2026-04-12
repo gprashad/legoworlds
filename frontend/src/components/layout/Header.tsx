@@ -5,19 +5,19 @@ export function Header() {
   const { user, signOut } = useAuth()
 
   return (
-    <header className="flex items-center justify-between px-6 py-4 bg-surface border-b border-border">
+    <header className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 bg-surface border-b border-border">
       <Link to="/scenes" className="flex items-center gap-2 no-underline">
-        <span className="text-2xl font-bold text-accent">LEGO WORLDS</span>
+        <span className="text-xl sm:text-2xl font-bold text-accent">LEGO WORLDS</span>
       </Link>
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 sm:gap-4">
         {user && (
           <>
-            <span className="text-text-secondary text-sm">
+            <span className="text-text-secondary text-xs sm:text-sm hidden sm:inline">
               {user.user_metadata?.full_name || user.email}
             </span>
             <button
               onClick={signOut}
-              className="text-sm text-text-secondary hover:text-text-primary transition-colors"
+              className="text-xs sm:text-sm text-text-secondary hover:text-text-primary transition-colors"
             >
               Sign out
             </button>
