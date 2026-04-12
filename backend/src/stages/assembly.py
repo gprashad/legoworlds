@@ -61,11 +61,12 @@ def _escape_drawtext(text: str) -> str:
 def _create_title_card(text: str, output_path: str, duration: float = 3.0):
     """Create a title card video with text on dark background."""
     escaped = _escape_drawtext(text)
-    # Use a single lavfi source with both video and audio to avoid timestamp issues
     _run_ffmpeg([
-        "-f", "lavfi",
-        "-i", f"color=c=0x1A1A1A:s={RESOLUTION}:r={FPS}:d={duration},format=yuv420p,drawtext=text='{escaped}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf[v];anullsrc=r=44100:cl=stereo[a]",
-        "-map", "[v]", "-map", "[a]",
+        "-f", "lavfi", "-i", f"color=c=0x1A1A1A:s={RESOLUTION}:r={FPS}:d={duration}",
+        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={duration}",
+        "-filter_complex",
+        f"[0:v]format=yuv420p,drawtext=text='{escaped}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf[v]",
+        "-map", "[v]", "-map", "1:a",
         "-t", str(duration),
         "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
         output_path,
@@ -194,43 +195,7 @@ async def assemble_movie(
             await _download_from_storage(sp, local)
             local_audio[key] = local
 
-        # Download photos for slideshow
-        photo_paths = await _download_photos(scene_id, work_dir)
-
         segments = []
-        director = screenplay.get("credits", {}).get("directed_by", "Cary")
-
-        # --- Title cards ---
-        logger.info(f"[{scene_id}] Creating title cards...")
-        title1 = os.path.join(work_dir, "segments", "01_presents.mp4")
-        _create_title_card("LEGO WORLDS presents...", title1, duration=3.0)
-        segments.append(title1)
-
-        title2 = os.path.join(work_dir, "segments", "02_director.mp4")
-        _create_title_card(f"A film by {director}", title2, duration=3.0)
-        segments.append(title2)
-
-        title3 = os.path.join(work_dir, "segments", "03_title.mp4")
-        _create_title_card(screenplay.get("title", "Untitled"), title3, duration=3.0)
-        segments.append(title3)
-
-        # --- Behind the scenes slideshow ---
-        if photo_paths:
-            logger.info(f"[{scene_id}] Creating photo slideshow...")
-            slideshow = os.path.join(work_dir, "segments", "04_slideshow.mp4")
-            result = _create_photo_slideshow(photo_paths, slideshow, duration_per_photo=3.0)
-            if result:
-                # Overlay narrator intro audio on slideshow
-                if "narrator_intro" in local_audio:
-                    slideshow_with_audio = os.path.join(work_dir, "segments", "04_slideshow_audio.mp4")
-                    slideshow_silent = os.path.join(work_dir, "segments", "04_slideshow_silent.mp4")
-                    _add_silent_audio(slideshow, slideshow_silent)
-                    _overlay_audio(slideshow_silent, local_audio["narrator_intro"], slideshow_with_audio)
-                    segments.append(slideshow_with_audio)
-                else:
-                    slideshow_silent = os.path.join(work_dir, "segments", "04_slideshow_silent.mp4")
-                    _add_silent_audio(slideshow, slideshow_silent)
-                    segments.append(slideshow_silent)
 
         # --- Scene videos with dialogue ---
         logger.info(f"[{scene_id}] Assembling scene videos with dialogue...")
@@ -247,24 +212,16 @@ async def assemble_movie(
             scene_dialogue_keys = [k for k in local_audio if k.startswith(f"dialogue_{scene_num}_")]
             for j, dk in enumerate(sorted(scene_dialogue_keys)):
                 next_path = f"{segment_base}_dial{j}.mp4"
-                _overlay_audio(current, local_audio[dk], next_path)
-                current = next_path
+                try:
+                    _overlay_audio(current, local_audio[dk], next_path)
+                    current = next_path
+                except RuntimeError:
+                    logger.warning(f"[{scene_id}] Failed to overlay {dk}, skipping")
 
             segments.append(current)
 
-        # --- Credits ---
-        logger.info(f"[{scene_id}] Creating credits...")
-        credits_text = f"Directed by {director}"
-        credits = os.path.join(work_dir, "segments", "99_credits.mp4")
-        _create_title_card(credits_text, credits, duration=4.0)
-
-        # Overlay narrator outro on credits if available
-        if "narrator_outro" in local_audio:
-            credits_with_audio = os.path.join(work_dir, "segments", "99_credits_audio.mp4")
-            _overlay_audio(credits, local_audio["narrator_outro"], credits_with_audio)
-            segments.append(credits_with_audio)
-        else:
-            segments.append(credits)
+        if not segments:
+            raise RuntimeError("No video segments to assemble")
 
         # --- Final concat ---
         logger.info(f"[{scene_id}] Final concatenation ({len(segments)} segments)...")

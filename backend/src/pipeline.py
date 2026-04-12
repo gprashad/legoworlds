@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from src.supabase_client import get_supabase
+from src.config import SUPABASE_STORAGE_BUCKET
 from src.stages.scene_analysis import analyze_scene
 from src.stages.screenplay import generate_screenplay
 from src.stages.production import generate_scene_videos, generate_scene_audio, cleanup_production_files
@@ -187,6 +188,55 @@ async def run_production(scene_id: str, job_id: str):
 
     except Exception as e:
         logger.error(f"[{scene_id}] Production failed: {e}")
+        _update_scene(scene_id, status="failed")
+        _update_job(job_id, status="failed", error=str(e))
+        raise
+
+
+async def run_assembly_only(scene_id: str, job_id: str):
+    """Re-run just the assembly step using existing production files in Storage."""
+    sb = get_supabase()
+
+    try:
+        scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
+        screenplay = scene.get("screenplay")
+        if not screenplay:
+            raise ValueError("No screenplay found")
+
+        # Discover existing production files in Storage
+        video_files = sb.storage.from_(SUPABASE_STORAGE_BUCKET).list(f"scenes/{scene_id}/production/video")
+        video_paths = [f"scenes/{scene_id}/production/video/{f['name']}" for f in video_files if f["name"].endswith(".mp4")]
+        video_paths.sort()
+
+        audio_files = sb.storage.from_(SUPABASE_STORAGE_BUCKET).list(f"scenes/{scene_id}/production/audio")
+        audio_paths = {}
+        for f in audio_files:
+            name = f["name"]
+            if name.endswith(".mp3"):
+                key = name.replace(".mp3", "")
+                audio_paths[key] = f"scenes/{scene_id}/production/audio/{name}"
+
+        logger.info(f"[{scene_id}] Assembly retry: {len(video_paths)} videos, {len(audio_paths)} audio files")
+
+        _update_scene(scene_id, status="assembling")
+        _update_job(job_id, status="assembling", current_stage="assembly", progress_pct=80)
+
+        final_video_path, thumbnail_path = await assemble_movie(
+            scene_id, screenplay, video_paths, audio_paths,
+        )
+
+        final_url = sb.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(final_video_path)
+
+        _update_scene(scene_id, status="complete", final_video_url=final_url)
+        _update_job(
+            job_id, status="complete", current_stage="complete", progress_pct=100,
+            stages_completed=["video_generation", "voice_generation", "assembly"],
+            completed_at=_now(),
+        )
+        logger.info(f"[{scene_id}] Assembly complete! URL: {final_url}")
+
+    except Exception as e:
+        logger.error(f"[{scene_id}] Assembly retry failed: {e}")
         _update_scene(scene_id, status="failed")
         _update_job(job_id, status="failed", error=str(e))
         raise
