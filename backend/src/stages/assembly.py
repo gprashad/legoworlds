@@ -130,18 +130,69 @@ def _concat_videos(video_paths: list[str], output_path: str):
     os.remove(list_file)
 
 
-def _overlay_audio(video_path: str, audio_path: str, output_path: str):
-    """Overlay audio onto video, mixing with any existing audio."""
+def _overlay_audio(video_path: str, audio_path: str, output_path: str, audio_volume: float = 1.0, bg_volume: float = 0.3):
+    """Overlay audio onto video, mixing with existing audio."""
     _run_ffmpeg([
         "-i", video_path,
         "-i", audio_path,
         "-filter_complex",
-        "[0:a]volume=0.3[bg];[1:a]volume=1.0[fg];[bg][fg]amix=inputs=2:duration=first[aout]",
+        f"[0:a]volume={bg_volume}[bg];[1:a]volume={audio_volume}[fg];[bg][fg]amix=inputs=2:duration=first[aout]",
         "-map", "0:v", "-map", "[aout]",
         "-c:v", "copy", "-c:a", "aac",
         "-shortest",
         output_path,
     ], desc="overlay audio")
+
+
+def _mix_scene_audio(video_path: str, dialogue_paths: list[str], sfx_paths: list[str], output_path: str):
+    """Mix dialogue and SFX onto a video scene with proper levels."""
+    inputs = ["-i", video_path]
+    audio_count = 1  # [0] = video
+
+    for d in dialogue_paths:
+        inputs.extend(["-i", d])
+        audio_count += 1
+    for s in sfx_paths:
+        inputs.extend(["-i", s])
+        audio_count += 1
+
+    if audio_count == 1:
+        # No extra audio, just ensure silent track exists
+        _add_silent_audio(video_path, output_path)
+        return
+
+    # Build filter: video silent bg + dialogue at full + sfx at 50%
+    filters = []
+    mix_inputs = []
+
+    # Video's audio (silent or very quiet)
+    filters.append(f"[0:a]volume=0.05[bg]")
+    mix_inputs.append("[bg]")
+
+    idx = 1
+    for _ in dialogue_paths:
+        filters.append(f"[{idx}:a]volume=1.0,adelay=0|0[d{idx}]")
+        mix_inputs.append(f"[d{idx}]")
+        idx += 1
+
+    for _ in sfx_paths:
+        filters.append(f"[{idx}:a]volume=0.4[s{idx}]")
+        mix_inputs.append(f"[s{idx}]")
+        idx += 1
+
+    mix_str = "".join(mix_inputs)
+    filters.append(f"{mix_str}amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=2[aout]")
+
+    _run_ffmpeg(
+        inputs + [
+            "-filter_complex", ";".join(filters),
+            "-map", "0:v", "-map", "[aout]",
+            "-c:v", "copy", "-c:a", "aac",
+            "-shortest",
+            output_path,
+        ],
+        desc="mix scene audio",
+    )
 
 
 def _add_silent_audio(video_path: str, output_path: str):
@@ -197,8 +248,8 @@ async def assemble_movie(
 
         segments = []
 
-        # --- Scene videos with dialogue ---
-        logger.info(f"[{scene_id}] Assembling scene videos with dialogue...")
+        # --- Scene videos with dialogue + SFX mixed ---
+        logger.info(f"[{scene_id}] Mixing scene audio (dialogue + SFX)...")
         for i, video_local in enumerate(local_videos):
             scene_num = i + 1
             segment_base = os.path.join(work_dir, "segments", f"scene_{scene_num}")
@@ -207,18 +258,31 @@ async def assemble_movie(
             video_with_audio = f"{segment_base}_base.mp4"
             _add_silent_audio(video_local, video_with_audio)
 
-            # Layer dialogue audio onto video
-            current = video_with_audio
-            scene_dialogue_keys = [k for k in local_audio if k.startswith(f"dialogue_{scene_num}_")]
-            for j, dk in enumerate(sorted(scene_dialogue_keys)):
-                next_path = f"{segment_base}_dial{j}.mp4"
-                try:
-                    _overlay_audio(current, local_audio[dk], next_path)
-                    current = next_path
-                except RuntimeError:
-                    logger.warning(f"[{scene_id}] Failed to overlay {dk}, skipping")
+            # Collect dialogue and SFX files for this scene
+            dialogue_keys = sorted(k for k in local_audio if k.startswith(f"dialogue_{scene_num}_"))
+            sfx_keys = sorted(k for k in local_audio if k.startswith(f"sfx_{scene_num}_"))
+            dialogue_files = [local_audio[k] for k in dialogue_keys]
+            sfx_files = [local_audio[k] for k in sfx_keys]
 
-            segments.append(current)
+            if dialogue_files or sfx_files:
+                mixed_path = f"{segment_base}_mixed.mp4"
+                try:
+                    _mix_scene_audio(video_with_audio, dialogue_files, sfx_files, mixed_path)
+                    segments.append(mixed_path)
+                except RuntimeError as e:
+                    logger.warning(f"[{scene_id}] Mix failed for scene {scene_num}, falling back: {e}")
+                    # Fallback: just overlay dialogue one at a time
+                    current = video_with_audio
+                    for j, dk in enumerate(dialogue_keys):
+                        next_path = f"{segment_base}_dial{j}.mp4"
+                        try:
+                            _overlay_audio(current, local_audio[dk], next_path)
+                            current = next_path
+                        except RuntimeError:
+                            pass
+                    segments.append(current)
+            else:
+                segments.append(video_with_audio)
 
         if not segments:
             raise RuntimeError("No video segments to assemble")

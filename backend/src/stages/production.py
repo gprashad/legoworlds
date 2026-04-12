@@ -46,14 +46,42 @@ STYLE_DIRECTIVE = (
     "from reference photo. Smooth camera movement."
 )
 
-# Voice assignments for character types
+# --- Voice System ---
+# Animated, fun voices matched to character archetypes
 VOICE_MAP = {
-    "protagonist": "pNInz6obpgDQGcFmaJgB",   # Adam
-    "antagonist": "VR6AewLTigWG4xSOukaG",     # Arnold
-    "supporting": "ErXwobaYiN019PkySvjV",      # Antoni
-    "narrator": "EXAVITQu4vr4xnSDxMaL",       # Bella (narrator)
-    "default": "pNInz6obpgDQGcFmaJgB",
+    "narrator": "JBFqnCBsd6RMkjVDRZzb",       # George — warm captivating storyteller
+    "protagonist": "IKne3meq5aSn9XLyUdCD",      # Charlie — deep, confident, energetic
+    "protagonist_female": "cgSgspJ2msm6clMCkdW9", # Jessica — playful, bright, warm
+    "antagonist": "N2lVS1w4EtoT3mBijeNu",       # Callum — husky trickster
+    "supporting": "TX3LPaxmHKxFDv7VOQHJ",       # Liam — energetic
+    "supporting_female": "FGY2WhTYpPnrUrTx2hkd", # Laura — enthusiast, quirky
+    "elder": "pqHfZKP75CvOlQylNhV4",            # Bill — wise, mature
+    "child": "cgSgspJ2msm6clMCkdW9",            # Jessica (bright)
+    "default": "IKne3meq5aSn9XLyUdCD",          # Charlie
 }
+
+# Emotion → voice settings tuning
+EMOTION_SETTINGS = {
+    "angry": {"stability": 0.30, "similarity_boost": 0.80, "style": 0.7, "use_speaker_boost": True},
+    "furious": {"stability": 0.25, "similarity_boost": 0.80, "style": 0.8, "use_speaker_boost": True},
+    "nervous": {"stability": 0.75, "similarity_boost": 0.60, "style": 0.3, "use_speaker_boost": False},
+    "whispering": {"stability": 0.80, "similarity_boost": 0.50, "style": 0.2, "use_speaker_boost": False},
+    "excited": {"stability": 0.35, "similarity_boost": 0.75, "style": 0.6, "use_speaker_boost": True},
+    "happy": {"stability": 0.40, "similarity_boost": 0.70, "style": 0.5, "use_speaker_boost": True},
+    "sad": {"stability": 0.70, "similarity_boost": 0.65, "style": 0.4, "use_speaker_boost": False},
+    "dismissive": {"stability": 0.70, "similarity_boost": 0.60, "style": 0.3, "use_speaker_boost": False},
+    "dramatic": {"stability": 0.35, "similarity_boost": 0.80, "style": 0.7, "use_speaker_boost": True},
+    "sarcastic": {"stability": 0.55, "similarity_boost": 0.70, "style": 0.5, "use_speaker_boost": False},
+    "heroic": {"stability": 0.40, "similarity_boost": 0.85, "style": 0.8, "use_speaker_boost": True},
+    "sneaky": {"stability": 0.65, "similarity_boost": 0.55, "style": 0.3, "use_speaker_boost": False},
+    "confident": {"stability": 0.50, "similarity_boost": 0.80, "style": 0.6, "use_speaker_boost": True},
+    "scared": {"stability": 0.30, "similarity_boost": 0.60, "style": 0.5, "use_speaker_boost": True},
+}
+
+DEFAULT_VOICE_SETTINGS = {"stability": 0.45, "similarity_boost": 0.75, "style": 0.5, "use_speaker_boost": True}
+
+# Narrator gets special cinematic settings
+NARRATOR_SETTINGS = {"stability": 0.55, "similarity_boost": 0.85, "style": 0.7, "use_speaker_boost": True}
 
 
 # --- Kie.ai Video Generation ---
@@ -166,8 +194,21 @@ async def generate_scene_videos(
 
 # --- ElevenLabs Voice Generation ---
 
-async def _generate_speech(text: str, voice_id: str) -> bytes:
-    """Generate speech audio via ElevenLabs API."""
+def _get_emotion_settings(emotion: str) -> dict:
+    """Get voice settings tuned to the emotion."""
+    emotion_lower = emotion.lower().split(",")[0].strip()
+    return EMOTION_SETTINGS.get(emotion_lower, DEFAULT_VOICE_SETTINGS)
+
+
+async def _generate_speech(text: str, voice_id: str, emotion: str = "", is_narrator: bool = False) -> bytes:
+    """Generate speech audio via ElevenLabs API with emotion-tuned settings."""
+    if is_narrator:
+        settings = NARRATOR_SETTINGS
+    elif emotion:
+        settings = _get_emotion_settings(emotion)
+    else:
+        settings = DEFAULT_VOICE_SETTINGS
+
     async with httpx.AsyncClient(timeout=60) as client:
         res = await client.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
@@ -179,8 +220,10 @@ async def _generate_speech(text: str, voice_id: str) -> bytes:
                 "text": text,
                 "model_id": "eleven_multilingual_v2",
                 "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.75,
+                    "stability": settings["stability"],
+                    "similarity_boost": settings["similarity_boost"],
+                    "style": settings.get("style", 0.5),
+                    "use_speaker_boost": settings.get("use_speaker_boost", True),
                 },
             },
         )
@@ -189,8 +232,45 @@ async def _generate_speech(text: str, voice_id: str) -> bytes:
         return res.content
 
 
-def _voice_for_role(role: str) -> str:
-    """Get ElevenLabs voice ID for a character role."""
+async def _generate_sfx(description: str) -> bytes | None:
+    """Generate a sound effect via ElevenLabs Sound Effects API."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.post(
+                "https://api.elevenlabs.io/v1/sound-generation",
+                headers={
+                    "xi-api-key": ELEVENLABS_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": description,
+                    "duration_seconds": 3.0,
+                },
+            )
+            if res.status_code != 200:
+                logger.warning(f"SFX generation failed for '{description}': {res.status_code}")
+                return None
+            return res.content
+    except Exception as e:
+        logger.warning(f"SFX generation error for '{description}': {e}")
+        return None
+
+
+def _voice_for_character(char_id: str, role: str, cast: list[dict]) -> str:
+    """Pick a voice for a character based on role and cast info."""
+    # Check for specific keywords in description
+    char_info = next((c for c in cast if c["id"] == char_id), None)
+    desc = (char_info.get("description", "") + " " + char_info.get("visual_details", "")).lower() if char_info else ""
+
+    if "child" in desc or "kid" in desc or "boy" in desc or "girl" in desc:
+        return VOICE_MAP["child"]
+    if "old" in desc or "elder" in desc or "wise" in desc:
+        return VOICE_MAP["elder"]
+    if "female" in desc or "woman" in desc or "girl" in desc or "she" in desc:
+        if role == "protagonist":
+            return VOICE_MAP["protagonist_female"]
+        return VOICE_MAP["supporting_female"]
+
     return VOICE_MAP.get(role, VOICE_MAP["default"])
 
 
@@ -200,39 +280,58 @@ async def generate_scene_audio(
     scene_bible: dict,
     on_progress: callable = None,
 ) -> dict:
-    """Generate all audio for a screenplay. Returns dict of storage paths."""
-    sb = get_supabase()
+    """Generate all audio: dialogue, narrator, and SFX. Returns dict of storage paths."""
     audio_paths = {}
+    cast = scene_bible.get("cast", [])
+    char_roles = {m["id"]: m.get("role", "supporting") for m in cast}
 
-    # Build character → role lookup from scene bible
-    char_roles = {}
-    for member in scene_bible.get("cast", []):
-        char_roles[member["id"]] = member.get("role", "supporting")
-
-    # Narrator intro
+    # --- Narrator intro (cinematic storyteller voice) ---
     logger.info(f"[{scene_id}] Generating narrator intro...")
-    intro_audio = await _generate_speech(screenplay["narrator_intro"], VOICE_MAP["narrator"])
+    intro_audio = await _generate_speech(
+        screenplay["narrator_intro"], VOICE_MAP["narrator"], is_narrator=True
+    )
     intro_path = f"scenes/{scene_id}/production/audio/narrator_intro.mp3"
     _storage_upload(intro_path, intro_audio, "audio/mpeg")
     audio_paths["narrator_intro"] = intro_path
 
-    # Dialogue per scene
+    # --- Dialogue per scene (emotion-tuned, character-matched voices) ---
+    # Track which characters got which voice for consistency
+    char_voice_cache: dict[str, str] = {}
+
     for scene in screenplay["scenes"]:
         num = scene["scene_number"]
         for i, line in enumerate(scene.get("dialogue", [])):
             char_id = line["character"]
+            emotion = line.get("emotion", "")
             role = char_roles.get(char_id, "supporting")
-            voice_id = _voice_for_role(role)
 
-            logger.info(f"[{scene_id}] Generating dialogue: {char_id} scene {num} line {i + 1}")
-            audio = await _generate_speech(line["line"], voice_id)
+            # Consistent voice per character across scenes
+            if char_id not in char_voice_cache:
+                char_voice_cache[char_id] = _voice_for_character(char_id, role, cast)
+            voice_id = char_voice_cache[char_id]
+
+            logger.info(f"[{scene_id}] Voice: {char_id} (scene {num}, line {i+1}, emotion: {emotion})")
+            audio = await _generate_speech(line["line"], voice_id, emotion=emotion)
             path = f"scenes/{scene_id}/production/audio/dialogue_{num}_{i + 1}.mp3"
             _storage_upload(path, audio, "audio/mpeg")
             audio_paths[f"dialogue_{num}_{i + 1}"] = path
 
-    # Narrator outro
+    # --- Sound effects per scene ---
+    for scene in screenplay["scenes"]:
+        num = scene["scene_number"]
+        for i, sfx_desc in enumerate(scene.get("sound_effects", [])):
+            logger.info(f"[{scene_id}] SFX: '{sfx_desc}' (scene {num})")
+            sfx_audio = await _generate_sfx(sfx_desc)
+            if sfx_audio:
+                path = f"scenes/{scene_id}/production/audio/sfx_{num}_{i + 1}.mp3"
+                _storage_upload(path, sfx_audio, "audio/mpeg")
+                audio_paths[f"sfx_{num}_{i + 1}"] = path
+
+    # --- Narrator outro ---
     logger.info(f"[{scene_id}] Generating narrator outro...")
-    outro_audio = await _generate_speech(screenplay["narrator_outro"], VOICE_MAP["narrator"])
+    outro_audio = await _generate_speech(
+        screenplay["narrator_outro"], VOICE_MAP["narrator"], is_narrator=True
+    )
     outro_path = f"scenes/{scene_id}/production/audio/narrator_outro.mp3"
     _storage_upload(outro_path, outro_audio, "audio/mpeg")
     audio_paths["narrator_outro"] = outro_path
