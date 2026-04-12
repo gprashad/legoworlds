@@ -1,21 +1,26 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Header } from '../components/layout/Header'
 import { MediaGrid } from '../components/workspace/MediaGrid'
 import { MediaUploader } from '../components/workspace/MediaUploader'
 import { BackstoryEditor } from '../components/workspace/BackstoryEditor'
 import { MakeMovieButton } from '../components/workspace/MakeMovieButton'
+import { StatusBadge } from '../components/scenes/StatusBadge'
 import { useScenes } from '../hooks/useScenes'
 import { useMediaUpload } from '../hooks/useMediaUpload'
+import { usePipeline } from '../hooks/usePipeline'
 import type { Scene } from '../types/scene'
 
 export function SceneWorkspace() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { fetchScene, updateScene } = useScenes()
   const { uploadMedia, deleteMedia, uploading } = useMediaUpload(id || '')
+  const pipeline = usePipeline(id || '')
   const [scene, setScene] = useState<Scene | null>(null)
   const [loading, setLoading] = useState(true)
   const [editingTitle, setEditingTitle] = useState(false)
+  const [triggering, setTriggering] = useState(false)
 
   const loadScene = useCallback(async () => {
     if (!id) return
@@ -54,9 +59,13 @@ export function SceneWorkspace() {
     setScene(prev => prev ? { ...prev, media: prev.media.filter(m => m.id !== mediaId) } : prev)
   }
 
-  const handleMakeMovie = () => {
-    // TODO: trigger pipeline
-    alert('Pipeline not yet implemented — coming next!')
+  const handleMakeMovie = async () => {
+    setTriggering(true)
+    const ok = await pipeline.triggerAnalysis()
+    setTriggering(false)
+    if (ok) {
+      navigate(`/scenes/${id}/screenplay`)
+    }
   }
 
   if (loading) {
@@ -80,6 +89,8 @@ export function SceneWorkspace() {
   }
 
   const photoCount = scene.media.filter(m => m.file_type === 'photo').length
+  const isDraft = scene.status === 'draft' || scene.status === 'ready' || scene.status === 'failed'
+  const hasScreenplay = scene.status === 'screenplay_review' || scene.status === 'approved' || scene.status === 'complete'
 
   return (
     <div className="min-h-screen bg-bg">
@@ -107,7 +118,27 @@ export function SceneWorkspace() {
               {scene.title}
             </h1>
           )}
+          <StatusBadge status={scene.status} />
         </div>
+
+        {/* Link to screenplay if it exists */}
+        {hasScreenplay && (
+          <Link
+            to={`/scenes/${id}/screenplay`}
+            className="block bg-surface rounded-xl p-4 border border-review/30 hover:border-review transition-colors text-center"
+          >
+            <span className="text-review font-semibold">
+              🎬 View Screenplay {scene.status === 'screenplay_review' ? '— Ready for Review' : ''}
+            </span>
+          </Link>
+        )}
+
+        {/* Pipeline error */}
+        {pipeline.error && (
+          <div className="bg-error/10 border border-error rounded-xl p-4 text-error text-sm">
+            {pipeline.error}
+          </div>
+        )}
 
         {/* Media section */}
         <section className="bg-surface rounded-xl p-5 border border-border space-y-4">
@@ -150,12 +181,15 @@ export function SceneWorkspace() {
           </div>
         </section>
 
-        {/* Make My Movie */}
-        <MakeMovieButton
-          photoCount={photoCount}
-          backstoryLength={scene.backstory?.length || 0}
-          onClick={handleMakeMovie}
-        />
+        {/* Make My Movie — only show for draft/ready/failed scenes */}
+        {isDraft && (
+          <MakeMovieButton
+            photoCount={photoCount}
+            backstoryLength={scene.backstory?.length || 0}
+            onClick={handleMakeMovie}
+            disabled={triggering}
+          />
+        )}
       </main>
     </div>
   )
