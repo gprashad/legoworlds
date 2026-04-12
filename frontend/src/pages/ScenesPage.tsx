@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Header } from '../components/layout/Header'
 import { SceneCard } from '../components/scenes/SceneCard'
@@ -12,9 +12,19 @@ export function ScenesPage() {
     fetchScenes()
   }, [fetchScenes])
 
+  const [creating, setCreating] = useState(false)
+
   const handleNewScene = async () => {
-    const scene = await createScene({ title: 'Untitled Scene' })
-    if (scene) navigate(`/scenes/${scene.id}`)
+    if (creating) return
+    setCreating(true)
+    try {
+      const scene = await createScene({ title: 'Untitled Scene' })
+      if (scene) {
+        navigate(`/scenes/${scene.id}`)
+      }
+    } finally {
+      setCreating(false)
+    }
   }
 
   return (
@@ -25,9 +35,10 @@ export function ScenesPage() {
           <h2 className="text-2xl font-bold text-text-primary">My Scenes</h2>
           <button
             onClick={handleNewScene}
-            className="px-5 py-2.5 bg-primary text-white rounded-xl font-semibold hover:bg-primary-hover transition-colors"
+            disabled={creating}
+            className="px-5 py-2.5 bg-primary text-white rounded-xl font-semibold hover:bg-primary-hover transition-colors disabled:opacity-50"
           >
-            + New Scene
+            {creating ? 'Creating...' : '+ New Scene'}
           </button>
         </div>
 
