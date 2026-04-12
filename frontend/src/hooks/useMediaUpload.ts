@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
-import { supabase } from '../config/supabase'
-import { apiFetch } from '../config/api'
 import type { SceneMedia } from '../types/scene'
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export function useMediaUpload(sceneId: string) {
   const [uploading, setUploading] = useState(false)
@@ -13,36 +13,21 @@ export function useMediaUpload(sceneId: string) {
     const results: SceneMedia[] = []
 
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const ext = file.name.split('.').pop() || 'jpg'
-        const storagePath = `scenes/${sceneId}/input/${Date.now()}_${i}.${ext}`
+      for (const file of files) {
+        const formData = new FormData()
+        formData.append('file', file)
 
-        // Upload to Supabase Storage
-        const { error: uploadError } = await supabase.storage
-          .from('legoworlds')
-          .upload(storagePath, file, { contentType: file.type })
-
-        if (uploadError) throw uploadError
-
-        // Get public URL
-        const { data: { publicUrl } } = supabase.storage
-          .from('legoworlds')
-          .getPublicUrl(storagePath)
-
-        // Register with backend
-        const fileType = file.type.startsWith('video/') ? 'video' : 'photo'
-        const media = await apiFetch<SceneMedia>(`/api/scenes/${sceneId}/media`, {
+        const res = await fetch(`${API_URL}/api/scenes/${sceneId}/media/upload`, {
           method: 'POST',
-          body: JSON.stringify({
-            file_url: publicUrl,
-            file_type: fileType,
-            file_name: file.name,
-            file_size_bytes: file.size,
-            sort_order: i,
-            source: 'upload',
-          }),
+          body: formData,
         })
+
+        if (!res.ok) {
+          const body = await res.text()
+          throw new Error(`Upload failed: ${body}`)
+        }
+
+        const media: SceneMedia = await res.json()
         results.push(media)
       }
     } catch (e) {
@@ -56,7 +41,7 @@ export function useMediaUpload(sceneId: string) {
 
   const deleteMedia = useCallback(async (mediaId: string) => {
     try {
-      await apiFetch(`/api/scenes/${sceneId}/media/${mediaId}`, { method: 'DELETE' })
+      await fetch(`${API_URL}/api/scenes/${sceneId}/media/${mediaId}`, { method: 'DELETE' })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Delete failed')
     }
