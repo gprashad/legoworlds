@@ -232,27 +232,53 @@ async def _generate_speech(text: str, voice_id: str, emotion: str = "", is_narra
         return res.content
 
 
+FREESOUND_API_KEY = os.getenv("FREESOUND_API_KEY", "")
+
+
 async def _generate_sfx(description: str) -> bytes | None:
-    """Generate a sound effect via ElevenLabs Sound Effects API."""
+    """Find and download a sound effect from Freesound.org API."""
+    if not FREESOUND_API_KEY:
+        logger.warning(f"No FREESOUND_API_KEY set, skipping SFX: '{description}'")
+        return None
+
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            res = await client.post(
-                "https://api.elevenlabs.io/v1/sound-generation",
-                headers={
-                    "xi-api-key": ELEVENLABS_API_KEY,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": description,
-                    "duration_seconds": 3.0,
+            # Search for matching sound
+            res = await client.get(
+                "https://freesound.org/apiv2/search/text/",
+                params={
+                    "query": description,
+                    "fields": "id,name,previews,duration",
+                    "filter": "duration:[0.5 TO 8]",
+                    "sort": "rating_desc",
+                    "page_size": 1,
+                    "token": FREESOUND_API_KEY,
                 },
             )
             if res.status_code != 200:
-                logger.warning(f"SFX generation failed for '{description}': {res.status_code}")
+                logger.warning(f"Freesound search failed for '{description}': {res.status_code}")
                 return None
-            return res.content
+
+            data = res.json()
+            results = data.get("results", [])
+            if not results:
+                logger.warning(f"No Freesound results for '{description}'")
+                return None
+
+            # Download the preview MP3 (no auth needed for previews)
+            preview_url = results[0].get("previews", {}).get("preview-hq-mp3")
+            if not preview_url:
+                return None
+
+            dl = await client.get(preview_url)
+            if dl.status_code != 200:
+                return None
+
+            logger.info(f"SFX downloaded: '{description}' → {results[0]['name']}")
+            return dl.content
+
     except Exception as e:
-        logger.warning(f"SFX generation error for '{description}': {e}")
+        logger.warning(f"SFX error for '{description}': {e}")
         return None
 
 

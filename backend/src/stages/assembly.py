@@ -196,13 +196,14 @@ def _mix_scene_audio(video_path: str, dialogue_paths: list[str], sfx_paths: list
 
 
 def _add_silent_audio(video_path: str, output_path: str):
-    """Add silent audio track to a video that has none."""
+    """Replace video's audio with a silent track (mutes any built-in audio from Kie.ai)."""
     _run_ffmpeg([
         "-i", video_path,
         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+        "-map", "0:v", "-map", "1:a",
         "-c:v", "copy", "-c:a", "aac", "-shortest",
         output_path,
-    ], desc="add silent audio")
+    ], desc="replace with silent audio")
 
 
 def _extract_thumbnail(video_path: str, output_path: str):
