@@ -47,17 +47,17 @@ STYLE_DIRECTIVE = (
 )
 
 # --- Voice System ---
-# Animated, fun voices matched to character archetypes
+# Fun voices matched to character archetypes (exact IDs from account)
 VOICE_MAP = {
-    "narrator": "JBFqnCBsd6RMkjVDRZzb",       # George — warm captivating storyteller
-    "protagonist": "IKne3meq5aSn9XLyUdCD",      # Charlie — deep, confident, energetic
+    "narrator": "JBFqnCBsd6RMkjVDRZzb",       # George — warm captivating storyteller (british)
+    "protagonist": "SOYHLrjzK2X1ezoPC6cr",      # Harry — fierce warrior (heroic energy)
     "protagonist_female": "cgSgspJ2msm6clMCkdW9", # Jessica — playful, bright, warm
-    "antagonist": "N2lVS1w4EtoT3mBijeNu",       # Callum — husky trickster
-    "supporting": "TX3LPaxmHKxFDv7VOQHJ",       # Liam — energetic
-    "supporting_female": "FGY2WhTYpPnrUrTx2hkd", # Laura — enthusiast, quirky
+    "antagonist": "N2lVS1w4EtoT3dr4eOWO",       # Callum — husky trickster
+    "supporting": "TX3LPaxmHKxFdv7VOQHJ",       # Liam — energetic
+    "supporting_female": "FGY2WhTYpPnrIDTdsKH5", # Laura — enthusiast, quirky
     "elder": "pqHfZKP75CvOlQylNhV4",            # Bill — wise, mature
     "child": "cgSgspJ2msm6clMCkdW9",            # Jessica (bright)
-    "default": "IKne3meq5aSn9XLyUdCD",          # Charlie
+    "default": "IKne3meq5aSn9XLyUdCD",          # Charlie — confident, energetic
 }
 
 # Emotion → voice settings tuning
