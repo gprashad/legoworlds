@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import ALLOWED_ORIGINS, ENVIRONMENT, LOG_LEVEL
 from src.api.routes_scenes import router as scenes_router
 from src.api.routes_media import router as media_router
+from src.api.routes_pipeline import router as pipeline_router
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ app.add_middleware(
 
 app.include_router(scenes_router)
 app.include_router(media_router)
+app.include_router(pipeline_router)
 
 
 @app.get("/health")

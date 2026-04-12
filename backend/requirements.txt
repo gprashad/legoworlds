@@ -6,3 +6,4 @@ supabase==2.11.0
 pydantic==2.10.4
 httpx==0.28.1
 PyJWT==2.10.1
+anthropic==0.52.0
