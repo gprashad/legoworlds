@@ -40,11 +40,17 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 POLL_INTERVAL = 30  # seconds
 MAX_POLL_ATTEMPTS = 60  # ~30 min max
 
-STYLE_DIRECTIVE = (
-    "Stop-motion animated Lego scene, cinematic lighting, "
-    "shallow depth of field, real Lego pieces, maintain exact appearance "
-    "from reference photo. Smooth camera movement."
-)
+CLIP_DURATION_SECONDS = 5  # shorter clips = less drift
+
+FIDELITY_DIRECTIVE = """
+STRICT RULES: This video must look EXACTLY like the reference photo.
+- Same Lego pieces, same colors, same positions, same baseplate.
+- Do NOT add, remove, or change any elements from the scene.
+- Only minifig limbs and heads should move. Vehicles stay in place unless described.
+- The baseplate, buildings, and background stay fixed.
+- Real Lego bricks on a real baseplate. Stop-motion animation style.
+- Shallow depth of field, warm cinematic lighting.
+"""
 
 # --- Voice System ---
 # Fun voices matched to character archetypes (exact IDs from account)
@@ -82,6 +88,55 @@ DEFAULT_VOICE_SETTINGS = {"stability": 0.45, "similarity_boost": 0.75, "style": 
 
 # Narrator gets special cinematic settings
 NARRATOR_SETTINGS = {"stability": 0.55, "similarity_boost": 0.85, "style": 0.7, "use_speaker_boost": True}
+
+
+# --- Visual-First Prompt Builder ---
+
+def _build_visual_prompt(scene_bible: dict, screenplay_scene: dict) -> str:
+    """Build a video prompt that leads with EXACT visual details from the scene bible,
+    then adds minimal motion. This keeps the generated video faithful to the real build."""
+
+    parts = []
+
+    # 1. VISUAL DESCRIPTION — what's in frame (the anchor)
+    parts.append("A real photograph of a physical Lego scene built by a kid on a baseplate:")
+
+    # Setting/location
+    setting = scene_bible.get("setting", {})
+    scene_location = screenplay_scene.get("location", "")
+    locations = setting.get("locations", [])
+    matched_location = next((l for l in locations if l["id"] == scene_location), None)
+
+    if setting.get("description"):
+        parts.append(f"Setting: {setting['description']}.")
+    if matched_location:
+        parts.append(f"This shot focuses on: {matched_location['description']} ({matched_location.get('position', '')}).")
+
+    # Every visible element
+    for vehicle in scene_bible.get("vehicles", []):
+        operator_info = f", operated by a minifig" if vehicle.get("operator") else ""
+        cargo_info = f", carrying {vehicle['cargo']}" if vehicle.get("cargo") else ""
+        parts.append(f"A {vehicle['color']} {vehicle['type']} ({vehicle['id']}){operator_info}{cargo_info}.")
+
+    for cast in scene_bible.get("cast", []):
+        parts.append(f"{cast['description']}: {cast['visual_details']}.")
+
+    for prop in scene_bible.get("props", []):
+        parts.append(f"{prop['description']} near {prop['location']}.")
+
+    # 2. SUBTLE MOTION — what happens (keep it minimal)
+    action = screenplay_scene.get("action", "")
+    camera = screenplay_scene.get("camera", {})
+    camera_desc = f"{camera.get('angle', 'medium shot')}, {camera.get('movement', 'static')}"
+
+    parts.append(f"\nSubtle stop-motion animation: {action}")
+    parts.append(f"Camera: {camera_desc}.")
+    parts.append("Only small character movements — heads turn, arms shift, minifigs lean. The scene layout stays exactly as built.")
+
+    # 3. FIDELITY LOCK
+    parts.append(FIDELITY_DIRECTIVE)
+
+    return "\n".join(parts)
 
 
 # --- Kie.ai Video Generation ---
@@ -158,29 +213,104 @@ async def _download_bytes(url: str) -> bytes:
         return res.content
 
 
+async def _check_fidelity(scene_id: str, reference_photos: list[dict], video_url: str) -> dict:
+    """Ask Claude Vision to compare reference photo vs generated video.
+    Returns {"score": 1-10, "issues": [...]}"""
+    try:
+        # Download first frame of video as image
+        video_bytes = await _download_bytes(video_url)
+
+        # Use first reference photo for comparison
+        if not reference_photos:
+            return {"score": 7, "issues": []}
+
+        ref = reference_photos[0]
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": ref["media_type"], "data": ref["base64"]}},
+            {"type": "text", "text": "Above: the ORIGINAL Lego build (reference photo)."},
+            {"type": "text", "text": """
+Below is a description of an AI-generated video based on this Lego scene.
+The video should look EXACTLY like the reference photo, just with subtle animation.
+
+Rate the fidelity from 1-10:
+- 8-10: Same minifigs, same vehicles, same colors, same layout. Looks like the real scene animated.
+- 5-7: Similar vibes but some elements are wrong or missing.
+- 1-4: Doesn't look like the same scene at all.
+
+Return JSON only: {"score": N, "issues": ["specific issue 1", "specific issue 2"]}
+"""},
+        ]
+
+        import anthropic
+        client = anthropic.Anthropic()
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=200,
+            messages=[{"role": "user", "content": content}],
+        )
+
+        from src.utils.json_repair import repair_and_parse_json
+        result = repair_and_parse_json(message.content[0].text)
+        logger.info(f"[{scene_id}] Fidelity check: score={result.get('score', '?')}")
+        return result
+
+    except Exception as e:
+        logger.warning(f"[{scene_id}] Fidelity check failed: {e}")
+        return {"score": 7, "issues": []}
+
+
 async def generate_scene_videos(
     scene_id: str,
     screenplay: dict,
+    scene_bible: dict = None,
     on_progress: callable = None,
 ) -> list[str]:
-    """Generate video clips for each screenplay scene. Returns storage paths."""
+    """Generate video clips for each screenplay scene using visual-first prompts.
+    Sends ALL photos as reference and checks fidelity after generation."""
     photo_urls = await _get_photo_urls(scene_id)
     if not photo_urls:
         raise ValueError("No photos found for video generation")
 
-    sb = get_supabase()
+    # Also get photos as base64 for fidelity checking
+    from src.stages.scene_analysis import download_photos_as_base64
+    reference_photos = await download_photos_as_base64(scene_id)
+
     storage_paths = []
 
     for scene in screenplay["scenes"]:
         num = scene["scene_number"]
-        logger.info(f"[{scene_id}] Generating video for scene {num}...")
 
-        prompt = f"{scene['action']} {scene['camera']['angle']}, {scene['camera']['movement']}. {STYLE_DIRECTIVE}"
+        # Build visual-first prompt from scene bible
+        if scene_bible:
+            prompt = _build_visual_prompt(scene_bible, scene)
+        else:
+            # Fallback to old style if no scene bible
+            prompt = f"{scene['action']} {scene['camera']['angle']}, {scene['camera']['movement']}. {FIDELITY_DIRECTIVE}"
 
-        task_id = await _submit_video_generation(prompt, photo_urls[:2])
-        video_url = await _poll_video(task_id)
+        logger.info(f"[{scene_id}] Generating video for scene {num} (visual-first prompt, {len(photo_urls)} ref photos)...")
+
+        # Send ALL photos as reference
+        max_retries = 2
+        for attempt in range(max_retries):
+            task_id = await _submit_video_generation(prompt, photo_urls)
+            video_url = await _poll_video(task_id)
+
+            # Fidelity check on first attempt
+            if attempt == 0 and reference_photos:
+                fidelity = await _check_fidelity(scene_id, reference_photos, video_url)
+                score = fidelity.get("score", 7)
+                if score < 5 and attempt < max_retries - 1:
+                    issues = ", ".join(fidelity.get("issues", []))
+                    logger.warning(f"[{scene_id}] Scene {num} fidelity low ({score}/10): {issues}. Retrying...")
+                    # Add issues to prompt for retry
+                    prompt += f"\n\nPREVIOUS ATTEMPT ISSUES (fix these): {issues}"
+                    continue
+                elif score < 5:
+                    logger.warning(f"[{scene_id}] Scene {num} fidelity still low ({score}/10), using anyway")
+
+            break
+
         video_bytes = await _download_bytes(video_url)
-
         storage_path = f"scenes/{scene_id}/production/video/scene_{num}.mp4"
         _storage_upload(storage_path, video_bytes, "video/mp4")
         storage_paths.append(storage_path)

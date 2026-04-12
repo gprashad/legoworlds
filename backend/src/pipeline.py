@@ -141,7 +141,7 @@ async def run_production(scene_id: str, job_id: str):
             pct = 5 + int((done / total) * 45)  # 5-50%
             _update_job(job_id, progress_pct=pct, current_stage=f"video_scene_{done}_of_{total}")
 
-        video_paths = await generate_scene_videos(scene_id, screenplay, on_progress=on_video_progress)
+        video_paths = await generate_scene_videos(scene_id, screenplay, scene_bible=scene_bible, on_progress=on_video_progress)
         _update_job(job_id, progress_pct=50, stages_completed=["scene_analysis", "screenplay", "video_generation"])
         logger.info(f"[{scene_id}] Video generation complete ({len(video_paths)} clips)")
 
