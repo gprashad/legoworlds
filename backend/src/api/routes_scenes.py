@@ -73,5 +73,9 @@ async def delete_scene(scene_id: str, user: dict = Depends(get_current_user)):
     if not check.data:
         raise HTTPException(status_code=404, detail="Scene not found")
 
+    # Delete related jobs first (no cascade on FK)
+    sb.table("jobs").delete().eq("scene_id", scene_id).execute()
+    # scene_media has ON DELETE CASCADE, but delete explicitly to be safe
+    sb.table("scene_media").delete().eq("scene_id", scene_id).execute()
     sb.table("scenes").delete().eq("id", scene_id).execute()
     return None
