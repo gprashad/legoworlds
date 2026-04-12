@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from src.supabase_client import get_supabase
 from src.stages.scene_analysis import analyze_scene
 from src.stages.screenplay import generate_screenplay
-from src.stages.production import generate_scene_videos, generate_scene_audio
+from src.stages.production import generate_scene_videos, generate_scene_audio, cleanup_production_files
 from src.stages.assembly import assemble_movie
 
 logger = logging.getLogger(__name__)
@@ -125,6 +125,9 @@ async def run_production(scene_id: str, job_id: str):
 
         if not screenplay or not scene_bible:
             raise ValueError("Missing screenplay or scene bible")
+
+        # Clean up any leftover files from previous attempts
+        await cleanup_production_files(scene_id)
 
         total_scenes = len(screenplay.get("scenes", []))
 

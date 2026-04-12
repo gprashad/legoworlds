@@ -9,6 +9,30 @@ from src.config import SUPABASE_STORAGE_BUCKET
 
 logger = logging.getLogger(__name__)
 
+
+def _storage_upload(path: str, data: bytes, content_type: str):
+    """Upload to Supabase Storage with upsert to handle retries."""
+    sb = get_supabase()
+    sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
+        path, data, {"content-type": content_type, "upsert": "true"}
+    )
+
+
+async def cleanup_production_files(scene_id: str):
+    """Remove old production and output files before retrying."""
+    sb = get_supabase()
+    for folder in ["production/video", "production/audio", "output"]:
+        path = f"scenes/{scene_id}/{folder}"
+        try:
+            files = sb.storage.from_(SUPABASE_STORAGE_BUCKET).list(path)
+            if files:
+                paths = [f"{path}/{f['name']}" for f in files]
+                sb.storage.from_(SUPABASE_STORAGE_BUCKET).remove(paths)
+                logger.info(f"[{scene_id}] Cleaned up {len(paths)} files from {folder}")
+        except Exception:
+            pass  # folder may not exist
+
+
 KIE_BASE = "https://api.kie.ai"
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
@@ -130,9 +154,7 @@ async def generate_scene_videos(
         video_bytes = await _download_bytes(video_url)
 
         storage_path = f"scenes/{scene_id}/production/video/scene_{num}.mp4"
-        sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
-            storage_path, video_bytes, {"content-type": "video/mp4"}
-        )
+        _storage_upload(storage_path, video_bytes, "video/mp4")
         storage_paths.append(storage_path)
         logger.info(f"[{scene_id}] Scene {num} video uploaded ({len(video_bytes)} bytes)")
 
@@ -191,9 +213,7 @@ async def generate_scene_audio(
     logger.info(f"[{scene_id}] Generating narrator intro...")
     intro_audio = await _generate_speech(screenplay["narrator_intro"], VOICE_MAP["narrator"])
     intro_path = f"scenes/{scene_id}/production/audio/narrator_intro.mp3"
-    sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
-        intro_path, intro_audio, {"content-type": "audio/mpeg"}
-    )
+    _storage_upload(intro_path, intro_audio, "audio/mpeg")
     audio_paths["narrator_intro"] = intro_path
 
     # Dialogue per scene
@@ -207,18 +227,14 @@ async def generate_scene_audio(
             logger.info(f"[{scene_id}] Generating dialogue: {char_id} scene {num} line {i + 1}")
             audio = await _generate_speech(line["line"], voice_id)
             path = f"scenes/{scene_id}/production/audio/dialogue_{num}_{i + 1}.mp3"
-            sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
-                path, audio, {"content-type": "audio/mpeg"}
-            )
+            _storage_upload(path, audio, "audio/mpeg")
             audio_paths[f"dialogue_{num}_{i + 1}"] = path
 
     # Narrator outro
     logger.info(f"[{scene_id}] Generating narrator outro...")
     outro_audio = await _generate_speech(screenplay["narrator_outro"], VOICE_MAP["narrator"])
     outro_path = f"scenes/{scene_id}/production/audio/narrator_outro.mp3"
-    sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
-        outro_path, outro_audio, {"content-type": "audio/mpeg"}
-    )
+    _storage_upload(outro_path, outro_audio, "audio/mpeg")
     audio_paths["narrator_outro"] = outro_path
 
     logger.info(f"[{scene_id}] All audio generated ({len(audio_paths)} files)")

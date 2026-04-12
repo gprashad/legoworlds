@@ -284,11 +284,11 @@ async def assemble_movie(
 
         with open(final_local, "rb") as f:
             sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
-                final_storage, f.read(), {"content-type": "video/mp4"}
+                final_storage, f.read(), {"content-type": "video/mp4", "upsert": "true"}
             )
         with open(thumb_local, "rb") as f:
             sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
-                thumb_storage, f.read(), {"content-type": "image/jpeg"}
+                thumb_storage, f.read(), {"content-type": "image/jpeg", "upsert": "true"}
             )
 
         logger.info(f"[{scene_id}] Movie assembled and uploaded!")
