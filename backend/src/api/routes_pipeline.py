@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from src.api.auth import get_current_user
 from src.supabase_client import get_supabase
-from src.pipeline import run_analysis_and_screenplay, run_screenplay_revision, run_production, run_assembly_only
+from src.pipeline import run_analysis_and_screenplay, run_screenplay_revision, run_production, run_assembly_only, run_audio_and_assembly
 
 router = APIRouter(prefix="/api/scenes/{scene_id}", tags=["pipeline"])
 
@@ -98,6 +98,19 @@ async def greenlight_screenplay(
     background_tasks.add_task(run_production, scene_id, job_id)
 
     return {"job_id": job_id, "status": "producing", "message": "Lights, camera, action! Production started."}
+
+
+@router.post("/retry-audio")
+async def retry_audio(
+    scene_id: str,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    """Re-generate voices + SFX and re-assemble, keeping existing video clips."""
+    _get_scene_or_404(scene_id, user["sub"])
+    job_id = _create_job(scene_id)
+    background_tasks.add_task(run_audio_and_assembly, scene_id, job_id)
+    return {"job_id": job_id, "status": "producing"}
 
 
 @router.post("/retry-assembly")

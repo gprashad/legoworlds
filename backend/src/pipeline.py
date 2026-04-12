@@ -240,3 +240,67 @@ async def run_assembly_only(scene_id: str, job_id: str):
         _update_scene(scene_id, status="failed")
         _update_job(job_id, status="failed", error=str(e))
         raise
+
+
+async def run_audio_and_assembly(scene_id: str, job_id: str):
+    """Re-generate voices + SFX, then re-assemble using existing video clips."""
+    sb = get_supabase()
+
+    try:
+        scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
+        screenplay = scene.get("screenplay")
+        scene_bible = scene.get("scene_bible")
+        if not screenplay or not scene_bible:
+            raise ValueError("Missing screenplay or scene bible")
+
+        # Find existing video clips
+        video_files = sb.storage.from_(SUPABASE_STORAGE_BUCKET).list(f"scenes/{scene_id}/production/video")
+        video_paths = [f"scenes/{scene_id}/production/video/{f['name']}" for f in video_files if f["name"].endswith(".mp4")]
+        video_paths.sort()
+
+        if not video_paths:
+            raise ValueError("No video clips found — run full production first")
+
+        # --- Re-generate all audio ---
+        _update_scene(scene_id, status="producing")
+        _update_job(job_id, status="producing", current_stage="voice_generation", progress_pct=10)
+        logger.info(f"[{scene_id}] Re-generating voices + SFX...")
+
+        # Clean old audio files
+        try:
+            old_audio = sb.storage.from_(SUPABASE_STORAGE_BUCKET).list(f"scenes/{scene_id}/production/audio")
+            if old_audio:
+                paths = [f"scenes/{scene_id}/production/audio/{f['name']}" for f in old_audio]
+                sb.storage.from_(SUPABASE_STORAGE_BUCKET).remove(paths)
+        except Exception:
+            pass
+
+        audio_paths = await generate_scene_audio(scene_id, screenplay, scene_bible)
+        _update_job(job_id, progress_pct=60, current_stage="voice_generation",
+                    stages_completed=["voice_generation"])
+        logger.info(f"[{scene_id}] Audio re-generated ({len(audio_paths)} files)")
+
+        # --- Re-assemble ---
+        _update_scene(scene_id, status="assembling")
+        _update_job(job_id, status="assembling", current_stage="assembly", progress_pct=70)
+        logger.info(f"[{scene_id}] Re-assembling with new audio...")
+
+        final_video_path, thumbnail_path = await assemble_movie(
+            scene_id, screenplay, video_paths, audio_paths,
+        )
+
+        final_url = sb.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(final_video_path)
+
+        _update_scene(scene_id, status="complete", final_video_url=final_url)
+        _update_job(
+            job_id, status="complete", current_stage="complete", progress_pct=100,
+            stages_completed=["voice_generation", "assembly"],
+            completed_at=_now(),
+        )
+        logger.info(f"[{scene_id}] Audio + assembly complete! URL: {final_url}")
+
+    except Exception as e:
+        logger.error(f"[{scene_id}] Audio retry failed: {e}")
+        _update_scene(scene_id, status="failed")
+        _update_job(job_id, status="failed", error=str(e))
+        raise
