@@ -39,18 +39,25 @@ export function ScreenplayReview() {
     }
   }, [scene?.status]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When pipeline finishes, reload scene
+  // When pipeline finishes, reload scene — but only react to job changes
+  // that match the current scene status (ignore stale jobs from prior runs)
   useEffect(() => {
     const jobStatus = pipeline.status?.job?.status
-    if (jobStatus === 'awaiting_approval' || jobStatus === 'failed') {
+    const sceneStatus = pipeline.status?.scene_status
+
+    if (jobStatus === 'awaiting_approval' && sceneStatus === 'screenplay_review') {
       pipeline.stopPolling()
       loadScene()
     }
-    if (jobStatus === 'complete') {
+    if (jobStatus === 'failed' && (sceneStatus === 'failed')) {
+      pipeline.stopPolling()
+      loadScene()
+    }
+    if (jobStatus === 'complete' && sceneStatus === 'complete') {
       pipeline.stopPolling()
       navigate(`/scenes/${id}/movie`)
     }
-  }, [pipeline.status?.job?.status]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pipeline.status?.job?.status, pipeline.status?.scene_status]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRevise = async (feedback: string) => {
     const ok = await pipeline.reviseScreenplay(feedback)
