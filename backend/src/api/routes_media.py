@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from src.api.auth import get_current_user
 from src.supabase_client import get_supabase
 from src.models import MediaRegister, MediaReorder
 from src.config import SUPABASE_STORAGE_BUCKET
+from src.stages.video_intake import process_video_intake
 import time
 
 router = APIRouter(prefix="/api/scenes/{scene_id}/media", tags=["media"])
@@ -37,16 +38,18 @@ async def register_media(scene_id: str, body: MediaRegister, user: dict = Depend
 @router.post("/upload", status_code=201)
 async def upload_media(
     scene_id: str,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
-    """Upload a file to Supabase Storage via the backend (bypasses RLS)."""
+    """Upload a file to Supabase Storage via the backend (bypasses RLS).
+    Videos are auto-processed: frames extracted + narration transcribed."""
     uid = user["sub"]
     _verify_scene_ownership(scene_id, uid)
 
     content = await file.read()
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 50MB)")
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 100MB)")
 
     content_type = file.content_type or "application/octet-stream"
     is_video = content_type.startswith("video/")
@@ -75,7 +78,15 @@ async def upload_media(
         "sort_order": sort_order,
         "source": "upload",
     }).execute()
-    return result.data[0]
+
+    media_record = result.data[0]
+
+    # Auto-process videos: extract frames + transcribe narration
+    if is_video:
+        background_tasks.add_task(process_video_intake, scene_id, storage_path)
+        media_record["processing"] = True
+
+    return media_record
 
 
 @router.delete("/{media_id}", status_code=204)

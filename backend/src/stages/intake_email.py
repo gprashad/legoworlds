@@ -26,6 +26,7 @@ from email.header import decode_header
 from src.supabase_client import get_supabase
 from src.config import SUPABASE_STORAGE_BUCKET
 from src.api.auth import DEV_USER_ID
+from src.stages.video_intake import process_video_intake
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,15 @@ async def poll_inbox() -> int:
                         "sort_order": i,
                         "source": "email",
                     }).execute()
+
+                # Auto-process any video attachments
+                video_attachments = [(i, a) for i, a in enumerate(attachments) if a["file_type"] == "video"]
+                for i, att in video_attachments:
+                    video_path = f"scenes/{scene_id}/input/{i + 1}_{att['filename']}"
+                    try:
+                        await process_video_intake(scene_id, video_path)
+                    except Exception as e:
+                        logger.warning(f"Video processing failed for email attachment: {e}")
 
                 photo_count = sum(1 for a in attachments if a["file_type"] == "photo")
                 video_count = sum(1 for a in attachments if a["file_type"] == "video")

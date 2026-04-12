@@ -21,6 +21,7 @@ import httpx
 from src.supabase_client import get_supabase
 from src.config import SUPABASE_STORAGE_BUCKET
 from src.api.auth import DEV_USER_ID
+from src.stages.video_intake import process_video_intake
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,13 @@ async def process_incoming_sms(form_data: dict) -> dict:
             }).execute()
 
             photo_count += 1
+
+            # Auto-process videos
+            if is_video:
+                try:
+                    await process_video_intake(scene_id, storage_path)
+                except Exception as e:
+                    logger.warning(f"Video processing failed for SMS: {e}")
 
     if photo_count == 0:
         # Clean up empty scene

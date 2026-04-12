@@ -51,10 +51,36 @@ export function SceneWorkspace() {
     setScene(prev => prev ? { ...prev, backstory: value } : prev)
   }
 
+  const [videoProcessing, setVideoProcessing] = useState(false)
+
   const handleFilesSelected = async (files: File[]) => {
+    const hasVideo = files.some(f => f.type.startsWith('video/'))
     const newMedia = await uploadMedia(files)
     if (newMedia.length > 0) {
       setScene(prev => prev ? { ...prev, media: [...prev.media, ...newMedia] } : prev)
+    }
+    // If a video was uploaded, it's being processed — poll for new frames + backstory
+    if (hasVideo && newMedia.length > 0) {
+      setVideoProcessing(true)
+      // Poll every 3s for ~30s to pick up extracted frames + transcription
+      let polls = 0
+      const pollInterval = setInterval(async () => {
+        polls++
+        const updated = await fetchScene(id!)
+        if (updated) {
+          const newFrameCount = updated.media.filter(m => m.source === 'video_extract').length
+          const hadFrames = scene?.media.filter(m => m.source === 'video_extract').length || 0
+          if (newFrameCount > hadFrames || polls >= 10) {
+            setScene(updated)
+            setVideoProcessing(false)
+            clearInterval(pollInterval)
+          }
+        }
+        if (polls >= 10) {
+          setVideoProcessing(false)
+          clearInterval(pollInterval)
+        }
+      }, 3000)
     }
   }
 
@@ -206,6 +232,17 @@ export function SceneWorkspace() {
         {pipeline.error && (
           <div className="bg-error/10 border border-error rounded-xl p-4 text-error text-sm">
             {pipeline.error}
+          </div>
+        )}
+
+        {/* Video processing indicator */}
+        {videoProcessing && (
+          <div className="bg-accent/10 border border-accent/30 rounded-xl p-4 flex items-center gap-3">
+            <div className="animate-spin rounded-full h-5 w-5 border-2 border-accent border-t-transparent" />
+            <div>
+              <p className="text-text-primary text-sm font-medium">Processing your video...</p>
+              <p className="text-text-secondary text-xs">Extracting frames and transcribing your narration</p>
+            </div>
           </div>
         )}
 
