@@ -232,54 +232,10 @@ async def _generate_speech(text: str, voice_id: str, emotion: str = "", is_narra
         return res.content
 
 
-FREESOUND_API_KEY = os.getenv("FREESOUND_API_KEY", "")
-
-
-async def _generate_sfx(description: str) -> bytes | None:
-    """Find and download a sound effect from Freesound.org API."""
-    if not FREESOUND_API_KEY:
-        logger.warning(f"No FREESOUND_API_KEY set, skipping SFX: '{description}'")
-        return None
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Search for matching sound
-            res = await client.get(
-                "https://freesound.org/apiv2/search/text/",
-                params={
-                    "query": description,
-                    "fields": "id,name,previews,duration",
-                    "filter": "duration:[0.5 TO 8]",
-                    "sort": "rating_desc",
-                    "page_size": 1,
-                    "token": FREESOUND_API_KEY,
-                },
-            )
-            if res.status_code != 200:
-                logger.warning(f"Freesound search failed for '{description}': {res.status_code}")
-                return None
-
-            data = res.json()
-            results = data.get("results", [])
-            if not results:
-                logger.warning(f"No Freesound results for '{description}'")
-                return None
-
-            # Download the preview MP3 (no auth needed for previews)
-            preview_url = results[0].get("previews", {}).get("preview-hq-mp3")
-            if not preview_url:
-                return None
-
-            dl = await client.get(preview_url)
-            if dl.status_code != 200:
-                return None
-
-            logger.info(f"SFX downloaded: '{description}' → {results[0]['name']}")
-            return dl.content
-
-    except Exception as e:
-        logger.warning(f"SFX error for '{description}': {e}")
-        return None
+def _generate_sfx_local(description: str, output_path: str) -> bool:
+    """Generate SFX using bundled FFmpeg-based library. Returns True if successful."""
+    from src.utils.sfx_library import generate_sfx
+    return generate_sfx(description, output_path)
 
 
 def _voice_for_character(char_id: str, role: str, cast: list[dict]) -> str:
@@ -347,11 +303,16 @@ async def generate_scene_audio(
         num = scene["scene_number"]
         for i, sfx_desc in enumerate(scene.get("sound_effects", [])):
             logger.info(f"[{scene_id}] SFX: '{sfx_desc}' (scene {num})")
-            sfx_audio = await _generate_sfx(sfx_desc)
-            if sfx_audio:
+            import tempfile
+            tmp_sfx = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+            tmp_sfx.close()
+            if _generate_sfx_local(sfx_desc, tmp_sfx.name):
+                with open(tmp_sfx.name, "rb") as f:
+                    sfx_data = f.read()
                 path = f"scenes/{scene_id}/production/audio/sfx_{num}_{i + 1}.mp3"
-                _storage_upload(path, sfx_audio, "audio/mpeg")
+                _storage_upload(path, sfx_data, "audio/mpeg")
                 audio_paths[f"sfx_{num}_{i + 1}"] = path
+            os.unlink(tmp_sfx.name)
 
     # --- Narrator outro ---
     logger.info(f"[{scene_id}] Generating narrator outro...")
