@@ -1,23 +1,34 @@
 """
-Video intake: extract key frames + transcribe narration from uploaded video.
-One video → reference photos + backstory, ready for the pipeline.
+Video intake: full intelligence extraction from walkthrough videos.
+
+When a kid records a walkthrough video with narration, we extract:
+1. Key frames at narration-matched timestamps (not just even intervals)
+2. Timestamped transcript with segment data
+3. Narration intelligence: character names, personalities, conflicts, story beats
+4. Camera movement analysis: pan direction, pauses, focus areas
+5. The original video reference for Claude Vision scene analysis
+
+The kid's voice is NEVER used in the final movie — only as intelligence.
 """
 
 import os
+import json
 import logging
 import subprocess
 import shutil
 import httpx
+import anthropic
 from pathlib import Path
 from src.supabase_client import get_supabase
 from src.config import SUPABASE_STORAGE_BUCKET
+from src.utils.json_repair import repair_and_parse_json
 
 logger = logging.getLogger(__name__)
 
 TEMP_BASE = os.getenv("TEMP_DIR", "/tmp/legoworlds")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-MAX_FRAMES = 6
-MAX_VIDEO_DURATION = 120  # seconds — only process first 2 min
+MAX_FRAMES = 8
+MAX_VIDEO_DURATION = 120
 
 
 def _ensure_dir(path: str):
@@ -25,80 +36,43 @@ def _ensure_dir(path: str):
 
 
 def _get_video_duration(video_path: str) -> float:
-    """Get video duration in seconds using ffprobe."""
     result = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", video_path],
         capture_output=True, text=True, timeout=10,
     )
     if result.returncode != 0:
-        return 30.0  # fallback
-    import json
+        return 30.0
     data = json.loads(result.stdout)
     return float(data.get("format", {}).get("duration", 30.0))
 
 
-def _extract_key_frames(video_path: str, output_dir: str, max_frames: int = MAX_FRAMES) -> list[str]:
-    """Extract evenly-spaced key frames from video, skipping shaky start/end."""
-    _ensure_dir(output_dir)
-
-    duration = _get_video_duration(video_path)
-    duration = min(duration, MAX_VIDEO_DURATION)
-
-    if duration < 3:
-        # Very short video — just grab one frame from the middle
-        output = os.path.join(output_dir, "frame_00.jpg")
-        subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(duration / 2), "-i", video_path,
-             "-vframes", "1", "-q:v", "2", output],
-            capture_output=True, timeout=10,
-        )
-        return [output] if os.path.exists(output) else []
-
-    # Skip first/last 10% (usually shaky)
-    start = duration * 0.10
-    end = duration * 0.90
-    usable = end - start
-
-    # Space frames evenly across the usable portion
-    num_frames = min(max_frames, max(2, int(usable / 4)))  # at least 1 frame per 4 seconds
-    interval = usable / (num_frames + 1)
-
-    frames = []
-    for i in range(num_frames):
-        timestamp = start + interval * (i + 1)
-        output = os.path.join(output_dir, f"frame_{i:02d}.jpg")
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(timestamp), "-i", video_path,
-             "-vframes", "1", "-q:v", "2", "-vf", "scale='min(1920,iw)':-2", output],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0 and os.path.exists(output) and os.path.getsize(output) > 1000:
-            frames.append(output)
-
-    logger.info(f"Extracted {len(frames)} frames from {duration:.1f}s video")
-    return frames
+def _extract_frame_at(video_path: str, timestamp: float, output_path: str) -> bool:
+    """Extract a single frame at a specific timestamp."""
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-ss", str(timestamp), "-i", video_path,
+         "-vframes", "1", "-q:v", "2", "-vf", "scale='min(1920,iw)':-2", output_path],
+        capture_output=True, text=True, timeout=15,
+    )
+    return result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000
 
 
 def _extract_audio(video_path: str, audio_path: str) -> bool:
-    """Extract audio track from video as WAV for transcription."""
+    """Extract audio track from video as WAV."""
     result = subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vn",
          "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
          "-t", str(MAX_VIDEO_DURATION), audio_path],
         capture_output=True, text=True, timeout=30,
     )
-    if result.returncode != 0:
-        logger.warning(f"Audio extraction failed: {result.stderr[-200:]}")
-        return False
-    # Check if audio file has any content
     return os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000
 
 
-async def _transcribe_audio(audio_path: str) -> str:
-    """Transcribe audio using OpenAI Whisper API."""
+# --- Phase 2: Narration Intelligence ---
+
+async def _transcribe_verbose(audio_path: str) -> dict:
+    """Transcribe audio with Whisper verbose mode — returns timestamped segments."""
     if not OPENAI_API_KEY:
-        logger.warning("No OPENAI_API_KEY set, skipping transcription")
-        return ""
+        return {"text": "", "segments": []}
 
     async with httpx.AsyncClient(timeout=60) as client:
         with open(audio_path, "rb") as f:
@@ -109,23 +83,131 @@ async def _transcribe_audio(audio_path: str) -> str:
                 data={
                     "model": "whisper-1",
                     "language": "en",
-                    "prompt": "A kid describing their Lego scene and the backstory of what's happening.",
+                    "response_format": "verbose_json",
+                    "timestamp_granularities[]": "segment",
+                    "prompt": "A kid showing their Lego scene and narrating the backstory.",
                 },
             )
 
     if res.status_code != 200:
-        logger.warning(f"Whisper transcription failed: {res.status_code} {res.text[:200]}")
-        return ""
+        logger.warning(f"Whisper failed: {res.status_code}")
+        return {"text": "", "segments": []}
 
-    text = res.json().get("text", "").strip()
-    logger.info(f"Transcribed {len(text)} characters from audio")
-    return text
+    data = res.json()
+    return {
+        "text": data.get("text", ""),
+        "segments": [
+            {"start": s["start"], "end": s["end"], "text": s["text"]}
+            for s in data.get("segments", [])
+        ],
+    }
 
+
+async def _extract_narration_intelligence(transcript: dict) -> dict:
+    """Use Claude to analyze the transcript and extract structured intelligence."""
+    text = transcript.get("text", "")
+    if not text or len(text) < 10:
+        return {}
+
+    segments_text = "\n".join(
+        f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text']}"
+        for s in transcript.get("segments", [])
+    )
+
+    client = anthropic.Anthropic()
+    message = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1000,
+        messages=[{
+            "role": "user",
+            "content": f"""A kid just recorded a walkthrough video of their Lego build and narrated it. Here's the timestamped transcript:
+
+{segments_text}
+
+Analyze this narration and extract:
+
+1. **characters**: Any characters the kid mentions — names, nicknames, descriptions, personalities, roles (hero/villain/etc). Use the kid's exact words.
+2. **key_moments**: Timestamps where the kid introduces something important (a character, a vehicle, a building, a conflict). These are the best frames to extract.
+3. **story_beats**: The narrative structure — what's the setup, conflict, and stakes?
+4. **camera_notes**: Based on when the kid pauses or lingers (longer segments), what areas are most important to show?
+5. **backstory**: A clean version of what the kid said, organized into a coherent backstory paragraph.
+
+Return JSON:
+{{
+  "characters": [{{"name": "string", "description": "string", "personality": "string", "role": "string"}}],
+  "key_moments": [{{"timestamp": number, "description": "string"}}],
+  "story_beats": {{"setup": "string", "conflict": "string", "stakes": "string"}},
+  "camera_notes": ["string"],
+  "backstory": "string"
+}}"""
+        }],
+    )
+
+    return repair_and_parse_json(message.content[0].text)
+
+
+# --- Phase 3: Smart Frame Extraction ---
+
+def _extract_smart_frames(
+    video_path: str,
+    output_dir: str,
+    key_moments: list[dict],
+    duration: float,
+) -> list[dict]:
+    """Extract frames at key narration moments + regular intervals for coverage."""
+    _ensure_dir(output_dir)
+    frames = []
+
+    # Extract at key moments first
+    for i, moment in enumerate(key_moments[:6]):
+        ts = moment.get("timestamp", 0)
+        if ts < 0 or ts > duration:
+            continue
+        output = os.path.join(output_dir, f"key_{i:02d}.jpg")
+        if _extract_frame_at(video_path, ts, output):
+            frames.append({
+                "path": output,
+                "timestamp": ts,
+                "label": moment.get("description", f"key moment at {ts:.1f}s"),
+                "source": "narration_match",
+            })
+
+    # Fill remaining slots with regular interval frames for coverage
+    remaining = MAX_FRAMES - len(frames)
+    if remaining > 0 and duration > 3:
+        start = duration * 0.1
+        end = duration * 0.9
+        interval = (end - start) / (remaining + 1)
+        for i in range(remaining):
+            ts = start + interval * (i + 1)
+            # Skip if too close to an existing key frame
+            if any(abs(ts - f["timestamp"]) < 2.0 for f in frames):
+                continue
+            output = os.path.join(output_dir, f"reg_{i:02d}.jpg")
+            if _extract_frame_at(video_path, ts, output):
+                frames.append({
+                    "path": output,
+                    "timestamp": ts,
+                    "label": f"coverage frame at {ts:.1f}s",
+                    "source": "interval",
+                })
+
+    frames.sort(key=lambda f: f["timestamp"])
+    logger.info(f"Extracted {len(frames)} frames ({sum(1 for f in frames if f['source']=='narration_match')} from narration, rest coverage)")
+    return frames
+
+
+# --- Main Processing Function ---
 
 async def process_video_intake(scene_id: str, video_storage_path: str) -> dict:
     """
-    Process an uploaded video: extract frames + transcribe narration.
-    Returns {"frames": [storage_paths], "backstory": "transcribed text"}.
+    Full video intelligence extraction:
+    1. Transcribe with timestamps
+    2. Extract narration intelligence (characters, beats, moments)
+    3. Smart frame extraction at key moments
+    4. Store everything for the pipeline
+
+    Returns dict with processing results.
     """
     sb = get_supabase()
     work_dir = os.path.join(TEMP_BASE, f"{scene_id}_video")
@@ -140,66 +222,88 @@ async def process_video_intake(scene_id: str, video_storage_path: str) -> dict:
         with open(video_local, "wb") as f:
             f.write(data)
 
-        # Extract key frames
-        logger.info(f"[{scene_id}] Extracting key frames...")
-        frame_paths = _extract_key_frames(video_local, frames_dir)
+        duration = _get_video_duration(video_local)
+        logger.info(f"[{scene_id}] Video duration: {duration:.1f}s")
 
-        # Upload frames as scene photos
+        # --- Step 1: Transcribe with timestamps ---
+        transcript = {"text": "", "segments": []}
+        audio_path = os.path.join(work_dir, "audio.wav")
+        if _extract_audio(video_local, audio_path):
+            logger.info(f"[{scene_id}] Transcribing narration (verbose)...")
+            transcript = await _transcribe_verbose(audio_path)
+            logger.info(f"[{scene_id}] Transcribed: {len(transcript['text'])} chars, {len(transcript['segments'])} segments")
+
+        # --- Step 2: Extract narration intelligence ---
+        intelligence = {}
+        if transcript["text"]:
+            logger.info(f"[{scene_id}] Extracting narration intelligence...")
+            intelligence = await _extract_narration_intelligence(transcript)
+            logger.info(f"[{scene_id}] Found {len(intelligence.get('characters', []))} characters, {len(intelligence.get('key_moments', []))} key moments")
+
+        # --- Step 3: Smart frame extraction ---
+        key_moments = intelligence.get("key_moments", [])
+        logger.info(f"[{scene_id}] Extracting frames ({len(key_moments)} key moments)...")
+        frames = _extract_smart_frames(video_local, frames_dir, key_moments, duration)
+
+        # Upload frames
         uploaded_frames = []
-        for i, frame_path in enumerate(frame_paths):
+        for i, frame in enumerate(frames):
             storage_path = f"scenes/{scene_id}/input/vframe_{i:02d}.jpg"
-            with open(frame_path, "rb") as f:
+            with open(frame["path"], "rb") as f:
                 sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
                     storage_path, f.read(),
                     {"content-type": "image/jpeg", "upsert": "true"},
                 )
 
             public_url = sb.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(storage_path)
-
-            # Check how many media already exist for sort order
             existing = sb.table("scene_media").select("id").eq("scene_id", scene_id).execute()
-            sort_order = len(existing.data)
 
             sb.table("scene_media").insert({
                 "scene_id": scene_id,
                 "file_url": public_url,
                 "file_type": "photo",
                 "file_name": f"frame_{i + 1}.jpg",
-                "file_size_bytes": os.path.getsize(frame_path),
-                "sort_order": sort_order,
+                "file_size_bytes": os.path.getsize(frame["path"]),
+                "sort_order": len(existing.data),
                 "source": "video_extract",
             }).execute()
-
             uploaded_frames.append(storage_path)
 
-        logger.info(f"[{scene_id}] Uploaded {len(uploaded_frames)} frames")
+        # --- Step 4: Update scene with intelligence ---
+        backstory = intelligence.get("backstory", transcript.get("text", ""))
 
-        # Transcribe narration
-        backstory = ""
-        audio_path = os.path.join(work_dir, "audio.wav")
-        if _extract_audio(video_local, audio_path):
-            logger.info(f"[{scene_id}] Transcribing narration...")
-            backstory = await _transcribe_audio(audio_path)
+        # Store the original video path for Claude Vision to use in scene analysis
+        # Store narration intelligence as metadata
+        update_fields = {}
+        if backstory:
+            scene = sb.table("scenes").select("backstory").eq("id", scene_id).execute().data[0]
+            if not scene.get("backstory"):
+                update_fields["backstory"] = backstory
 
-            if backstory:
-                # Update scene with transcribed backstory (only if scene doesn't already have one)
-                scene = sb.table("scenes").select("backstory").eq("id", scene_id).execute().data[0]
-                if not scene.get("backstory"):
-                    sb.table("scenes").update({"backstory": backstory}).eq("id", scene_id).execute()
-                    logger.info(f"[{scene_id}] Backstory auto-filled from narration")
-                else:
-                    # Append transcription to existing backstory
-                    existing = scene["backstory"]
-                    combined = f"{existing}\n\n[From video narration]: {backstory}"
-                    sb.table("scenes").update({"backstory": combined}).eq("id", scene_id).execute()
-                    logger.info(f"[{scene_id}] Narration appended to existing backstory")
-        else:
-            logger.info(f"[{scene_id}] No audio track in video, skipping transcription")
+        # Store video intelligence in scene_bible temporarily
+        # (will be overwritten by proper scene analysis, but enriches it)
+        video_intel = {
+            "_video_intelligence": True,
+            "_transcript": transcript,
+            "_narration_intelligence": intelligence,
+            "_video_storage_path": video_storage_path,
+            "_camera_notes": intelligence.get("camera_notes", []),
+            "_story_beats": intelligence.get("story_beats", {}),
+            "_character_hints": intelligence.get("characters", []),
+        }
+        update_fields["scene_bible"] = video_intel
+
+        if update_fields:
+            sb.table("scenes").update(update_fields).eq("id", scene_id).execute()
+
+        logger.info(f"[{scene_id}] Video processing complete: {len(uploaded_frames)} frames, backstory={'yes' if backstory else 'no'}")
 
         return {
             "frames": uploaded_frames,
-            "backstory": backstory,
             "frame_count": len(uploaded_frames),
+            "backstory": backstory,
+            "intelligence": intelligence,
+            "transcript_segments": len(transcript.get("segments", [])),
         }
 
     finally:

@@ -66,6 +66,24 @@ The director reviewed a previous draft and has this feedback:
 Please revise the screenplay based on this feedback.
 """
 
+    # Add enriched data from video walkthrough if available
+    story_beats = scene_bible.get("story_beats", {})
+    if story_beats:
+        prompt += f"""
+The builder described this story structure in their walkthrough:
+- Setup: {story_beats.get('setup', '')}
+- Conflict: {story_beats.get('conflict', '')}
+- Stakes: {story_beats.get('stakes', '')}
+Follow this structure closely — it's what the builder wants.
+"""
+
+    camera_notes = scene_bible.get("setting", {}).get("key_angles", [])
+    if camera_notes:
+        prompt += f"""
+Best camera angles from the builder's walkthrough: {', '.join(camera_notes)}
+Use these as reference for camera directions — these are the angles that show the scene best.
+"""
+
     prompt += f"""
 Write a screenplay for a 60-90 second animated short film.
 
@@ -74,9 +92,11 @@ Use this exact JSON schema:
 
 Important:
 - Use cast IDs from the scene bible for dialogue character fields
+- Use the builder's own character names and personality descriptions
 - Reference actual photo filenames in camera.reference_photo
 - 3-5 scenes total
 - Make the dialogue fun, punchy, and age-appropriate
+- If the builder gave characters specific personalities, reflect that in dialogue
 - The narrator should be cinematic but playful
 
 Return ONLY the JSON object, no markdown fences or explanation."""
