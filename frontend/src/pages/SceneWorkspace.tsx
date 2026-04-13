@@ -237,11 +237,41 @@ export function SceneWorkspace() {
 
         {/* Video processing indicator */}
         {videoProcessing && (
-          <div className="bg-accent/10 border border-accent/30 rounded-xl p-4 flex items-center gap-3">
-            <div className="animate-spin rounded-full h-5 w-5 border-2 border-accent border-t-transparent" />
-            <div>
-              <p className="text-text-primary text-sm font-medium">Processing your video...</p>
-              <p className="text-text-secondary text-xs">Extracting frames and transcribing your narration</p>
+          <div className="bg-surface rounded-xl border border-accent/30 p-6 space-y-4 overflow-hidden relative">
+            {/* Animated shimmer background */}
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-accent/5 to-transparent animate-[shimmer_2s_infinite]" style={{backgroundSize: '200% 100%'}} />
+
+            <div className="relative flex items-center gap-4">
+              <div className="relative">
+                <div className="animate-spin rounded-full h-10 w-10 border-3 border-accent/20 border-t-accent" />
+                <span className="absolute inset-0 flex items-center justify-center text-lg">🎬</span>
+              </div>
+              <div>
+                <p className="text-text-primary font-semibold">Processing your video</p>
+                <p className="text-text-secondary text-sm">This takes 15-30 seconds</p>
+              </div>
+            </div>
+
+            <div className="relative space-y-2.5">
+              <div className="flex items-center gap-3">
+                <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-white text-xs animate-pulse">1</div>
+                <span className="text-sm text-text-primary">Extracting key frames from your video</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="w-5 h-5 rounded-full bg-accent/30 flex items-center justify-center text-white text-xs">2</div>
+                <span className="text-sm text-text-secondary">Listening to your narration</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="w-5 h-5 rounded-full bg-accent/30 flex items-center justify-center text-white text-xs">3</div>
+                <span className="text-sm text-text-secondary">Understanding characters and story</span>
+              </div>
+            </div>
+
+            {/* Animated progress dots */}
+            <div className="relative flex gap-1.5 justify-center pt-2">
+              <div className="w-2 h-2 rounded-full bg-accent animate-bounce" style={{animationDelay: '0ms'}} />
+              <div className="w-2 h-2 rounded-full bg-accent animate-bounce" style={{animationDelay: '150ms'}} />
+              <div className="w-2 h-2 rounded-full bg-accent animate-bounce" style={{animationDelay: '300ms'}} />
             </div>
           </div>
         )}
