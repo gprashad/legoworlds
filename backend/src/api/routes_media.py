@@ -174,6 +174,34 @@ async def upload_media(
     return media_record
 
 
+@router.post("/reprocess-video")
+async def reprocess_video(
+    scene_id: str,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    """Re-run video processing (frame extraction + transcription) on existing video."""
+    uid = user["sub"]
+    _verify_scene_ownership(scene_id, uid)
+
+    sb = get_supabase()
+    # Find the video file in storage
+    folder = f"scenes/{scene_id}/input"
+    files = sb.storage.from_(SUPABASE_STORAGE_BUCKET).list(folder)
+    video_path = None
+    for f in files:
+        name = f["name"]
+        if name.lower().endswith((".mp4", ".mov", ".m4v", ".webm")):
+            video_path = f"{folder}/{name}"
+            break
+
+    if not video_path:
+        raise HTTPException(status_code=404, detail="No video found in scene")
+
+    background_tasks.add_task(process_video_intake, scene_id, video_path)
+    return {"status": "reprocessing", "video": video_path}
+
+
 @router.delete("/{media_id}", status_code=204)
 async def delete_media(scene_id: str, media_id: str, user: dict = Depends(get_current_user)):
     uid = user["sub"]

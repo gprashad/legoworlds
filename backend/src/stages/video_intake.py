@@ -57,12 +57,13 @@ def _extract_frame_at(video_path: str, timestamp: float, output_path: str) -> bo
 
 
 def _extract_audio(video_path: str, audio_path: str) -> bool:
-    """Extract audio track from video as WAV."""
+    """Extract audio track from video as WAV with volume normalization."""
     result = subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vn",
+         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,highpass=f=80,lowpass=f=8000",
          "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
          "-t", str(MAX_VIDEO_DURATION), audio_path],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=60,
     )
     return os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000
 
