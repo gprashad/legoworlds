@@ -3,9 +3,11 @@ import { useCallback, useRef, useState } from 'react'
 interface MediaUploaderProps {
   onFilesSelected: (files: File[]) => void
   uploading: boolean
+  uploadProgress?: number
+  uploadFileName?: string
 }
 
-export function MediaUploader({ onFilesSelected, uploading }: MediaUploaderProps) {
+export function MediaUploader({ onFilesSelected, uploading, uploadProgress = 0, uploadFileName = '' }: MediaUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
 
@@ -13,9 +15,7 @@ export function MediaUploader({ onFilesSelected, uploading }: MediaUploaderProps
     const files = Array.from(fileList).filter(f => {
       const type = f.type.toLowerCase()
       const name = f.name.toLowerCase()
-      // Accept by MIME type
       if (type.startsWith('image/') || type.startsWith('video/')) return true
-      // Fallback: accept by extension (iOS sometimes has empty type)
       if (name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') ||
           name.endsWith('.webp') || name.endsWith('.gif') || name.endsWith('.heic') ||
           name.endsWith('.mp4') || name.endsWith('.mov') || name.endsWith('.m4v') ||
@@ -32,9 +32,34 @@ export function MediaUploader({ onFilesSelected, uploading }: MediaUploaderProps
   }, [handleFiles])
 
   const handleClick = () => {
-    // Reset input so re-selecting the same file triggers onChange
     if (inputRef.current) inputRef.current.value = ''
     inputRef.current?.click()
+  }
+
+  // Show progress bar during upload
+  if (uploading) {
+    return (
+      <div className="rounded-xl border-2 border-accent/30 bg-accent/5 p-5 space-y-3">
+        <div className="flex items-center gap-3">
+          <div className="animate-spin rounded-full h-5 w-5 border-2 border-accent border-t-transparent flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-text-primary font-medium truncate">
+              Uploading {uploadFileName || 'file'}...
+            </p>
+            <p className="text-xs text-text-secondary">
+              {uploadProgress < 100 ? `${uploadProgress}% uploaded` : 'Processing...'}
+            </p>
+          </div>
+          <span className="text-sm font-semibold text-accent">{uploadProgress}%</span>
+        </div>
+        <div className="w-full bg-surface-elevated rounded-full h-2.5 overflow-hidden">
+          <div
+            className="h-full bg-accent rounded-full transition-all duration-300"
+            style={{ width: `${Math.max(uploadProgress, 2)}%` }}
+          />
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -46,13 +71,10 @@ export function MediaUploader({ onFilesSelected, uploading }: MediaUploaderProps
       className={`
         flex flex-col items-center justify-center gap-2 p-6 rounded-xl border-2 border-dashed cursor-pointer transition-colors
         ${dragOver ? 'border-accent bg-accent/10' : 'border-border hover:border-text-secondary'}
-        ${uploading ? 'opacity-50 pointer-events-none' : ''}
       `}
     >
-      <span className="text-3xl">{uploading ? '⏳' : '+'}</span>
-      <span className="text-sm text-text-secondary">
-        {uploading ? 'Uploading...' : 'Add photos or videos'}
-      </span>
+      <span className="text-3xl">+</span>
+      <span className="text-sm text-text-secondary">Add photos or videos</span>
       <input
         ref={inputRef}
         type="file"

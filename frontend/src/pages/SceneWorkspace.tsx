@@ -17,7 +17,7 @@ export function SceneWorkspace() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { fetchScene, updateScene, deleteScene } = useScenes()
-  const { uploadMedia, deleteMedia, uploading } = useMediaUpload(id || '')
+  const { uploadMedia, deleteMedia, uploading, uploadProgress, uploadFileName } = useMediaUpload(id || '')
   const pipeline = usePipeline(id || '')
   const [scene, setScene] = useState<Scene | null>(null)
   const [loading, setLoading] = useState(true)
@@ -250,7 +250,7 @@ export function SceneWorkspace() {
         <section className="bg-surface rounded-xl p-5 border border-border space-y-4">
           <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Media</h2>
           <MediaGrid media={scene.media} onDelete={handleDeleteMedia} />
-          <MediaUploader onFilesSelected={handleFilesSelected} uploading={uploading} />
+          <MediaUploader onFilesSelected={handleFilesSelected} uploading={uploading} uploadProgress={uploadProgress} uploadFileName={uploadFileName} />
           <VoiceoverRecorder
             sceneId={id || ''}
             existingUrl={scene.voiceover_url}
