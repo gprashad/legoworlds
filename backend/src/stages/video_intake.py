@@ -70,24 +70,37 @@ def _extract_audio(video_path: str, audio_path: str) -> bool:
 # --- Phase 2: Narration Intelligence ---
 
 async def _transcribe_verbose(audio_path: str) -> dict:
-    """Transcribe audio with Whisper verbose mode — returns timestamped segments."""
+    """Transcribe audio with Whisper verbose mode — returns timestamped segments.
+    Retries on rate limit (429)."""
     if not OPENAI_API_KEY:
         return {"text": "", "segments": []}
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        with open(audio_path, "rb") as f:
-            res = await client.post(
-                "https://api.openai.com/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                files={"file": ("audio.wav", f, "audio/wav")},
-                data={
-                    "model": "whisper-1",
-                    "language": "en",
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "segment",
-                    "prompt": "A kid showing their Lego scene and narrating the backstory.",
-                },
-            )
+    import asyncio
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        async with httpx.AsyncClient(timeout=120) as client:
+            with open(audio_path, "rb") as f:
+                res = await client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    files={"file": ("audio.wav", f, "audio/wav")},
+                    data={
+                        "model": "whisper-1",
+                        "language": "en",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "segment",
+                        "prompt": "A kid showing their Lego scene and narrating the backstory.",
+                    },
+                )
+
+        if res.status_code == 429:
+            wait = (attempt + 1) * 10  # 10s, 20s, 30s
+            logger.warning(f"Whisper rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+            await asyncio.sleep(wait)
+            continue
+
+        break
 
     if res.status_code != 200:
         logger.warning(f"Whisper failed: {res.status_code}")
