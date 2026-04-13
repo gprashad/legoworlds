@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scenes/{scene_id}/media", tags=["media"])
 
 TEMP_BASE = os.getenv("TEMP_DIR", "/tmp/legoworlds")
-MAX_STORAGE_SIZE = 45 * 1024 * 1024  # 45MB — under Supabase 50MB limit
+MAX_STORAGE_SIZE = 200 * 1024 * 1024  # 200MB — compress only very large videos (Supabase Pro: 5GB limit)
 
 
 def _verify_scene_ownership(scene_id: str, uid: str):
