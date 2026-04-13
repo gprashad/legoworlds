@@ -48,8 +48,8 @@ async def upload_media(
     _verify_scene_ownership(scene_id, uid)
 
     content = await file.read()
-    if len(content) > 100 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 100MB)")
+    if len(content) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 500MB)")
 
     content_type = file.content_type or "application/octet-stream"
     is_video = content_type.startswith("video/")
