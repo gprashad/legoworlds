@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scenes/{scene_id}/media", tags=["media"])
 
 TEMP_BASE = os.getenv("TEMP_DIR", "/tmp/legoworlds")
-MAX_STORAGE_SIZE = 200 * 1024 * 1024  # 200MB — compress only very large videos (Supabase Pro: 5GB limit)
+MAX_STORAGE_SIZE = 48 * 1024 * 1024  # 48MB — always compress large phone videos to keep uploads fast
 
 
 def _verify_scene_ownership(scene_id: str, uid: str):
@@ -27,37 +27,47 @@ def _verify_scene_ownership(scene_id: str, uid: str):
 
 
 def _compress_video(input_path: str, output_path: str, target_size_mb: int = 40) -> bool:
-    """Compress video to fit within storage limits. Keeps first 120s max."""
+    """Compress video to fit within storage limits. Keeps first 120s max.
+    Handles iPhone HEVC .mov files."""
     try:
+        import json as _json
+
         # Get duration
         probe = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", input_path],
-            capture_output=True, text=True, timeout=10,
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", input_path],
+            capture_output=True, text=True, timeout=15,
         )
-        import json
-        duration = float(json.loads(probe.stdout).get("format", {}).get("duration", 60))
-        duration = min(duration, 120)  # cap at 2 min
+        duration = 60.0
+        if probe.returncode == 0:
+            probe_data = _json.loads(probe.stdout)
+            duration = float(probe_data.get("format", {}).get("duration", 60))
+        duration = min(duration, 120)
 
-        # Target bitrate = target_size * 8 / duration (in bits/s)
-        target_bitrate = int((target_size_mb * 8 * 1024 * 1024) / duration)
-        video_bitrate = max(target_bitrate - 128000, 500000)  # reserve 128kbps for audio
+        # Target bitrate
+        target_bitrate = int((target_size_mb * 8 * 1024 * 1024) / max(duration, 1))
+        video_bitrate = max(target_bitrate - 128000, 500000)
 
+        # Use -hwaccel auto for HEVC decoding, scale down, re-encode to H.264
         result = subprocess.run(
-            ["ffmpeg", "-y", "-i", input_path,
+            ["ffmpeg", "-y",
+             "-i", input_path,
              "-t", str(duration),
-             "-c:v", "libx264", "-preset", "fast", "-b:v", str(video_bitrate),
-             "-c:a", "aac", "-b:a", "128k",
+             "-c:v", "libx264", "-preset", "ultrafast", "-b:v", str(video_bitrate),
+             "-c:a", "aac", "-b:a", "128k", "-ac", "1",
              "-vf", "scale='min(1280,iw)':-2",
+             "-pix_fmt", "yuv420p",
              "-movflags", "+faststart",
              output_path],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=600,
         )
-        if result.returncode == 0 and os.path.exists(output_path):
-            size = os.path.getsize(output_path)
-            logger.info(f"Compressed video: {os.path.getsize(input_path)} → {size} bytes")
+
+        if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+            orig = os.path.getsize(input_path)
+            compressed = os.path.getsize(output_path)
+            logger.info(f"Compressed video: {orig // (1024*1024)}MB → {compressed // (1024*1024)}MB")
             return True
         else:
-            logger.warning(f"Video compression failed: {result.stderr[-200:]}")
+            logger.warning(f"Video compression failed: {result.stderr[-300:]}")
             return False
     except Exception as e:
         logger.warning(f"Video compression error: {e}")
