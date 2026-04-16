@@ -117,8 +117,54 @@ async def _transcribe_verbose(audio_path: str) -> dict:
     }
 
 
+NARRATION_INTELLIGENCE_TOOL = {
+    "name": "save_narration_intelligence",
+    "description": "Save structured intelligence extracted from the kid's narration.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "characters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "personality": {"type": "string"},
+                        "role": {"type": "string"},
+                    },
+                    "required": ["name", "description"],
+                },
+            },
+            "key_moments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "timestamp": {"type": "number"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["timestamp", "description"],
+                },
+            },
+            "story_beats": {
+                "type": "object",
+                "properties": {
+                    "setup": {"type": "string"},
+                    "conflict": {"type": "string"},
+                    "stakes": {"type": "string"},
+                },
+            },
+            "camera_notes": {"type": "array", "items": {"type": "string"}},
+            "backstory": {"type": "string"},
+        },
+        "required": ["characters", "key_moments", "story_beats", "camera_notes", "backstory"],
+    },
+}
+
+
 async def _extract_narration_intelligence(transcript: dict) -> dict:
-    """Use Claude to analyze the transcript and extract structured intelligence."""
+    """Use Claude tool-use to extract structured intelligence. Never raises — returns {} on failure."""
     text = transcript.get("text", "")
     if not text or len(text) < 10:
         return {}
@@ -128,36 +174,45 @@ async def _extract_narration_intelligence(transcript: dict) -> dict:
         for s in transcript.get("segments", [])
     )
 
-    client = anthropic.Anthropic()
-    message = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=1000,
-        messages=[{
-            "role": "user",
-            "content": f"""A kid just recorded a walkthrough video of their Lego build and narrated it. Here's the timestamped transcript:
+    try:
+        client = anthropic.Anthropic()
+        message = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=2000,
+            tools=[NARRATION_INTELLIGENCE_TOOL],
+            tool_choice={"type": "tool", "name": "save_narration_intelligence"},
+            messages=[{
+                "role": "user",
+                "content": f"""A kid just recorded a walkthrough video of their Lego build and narrated it. Here's the timestamped transcript:
 
 {segments_text}
 
-Analyze this narration and extract:
+Analyze this narration and call save_narration_intelligence with:
 
 1. **characters**: Any characters the kid mentions — names, nicknames, descriptions, personalities, roles (hero/villain/etc). Use the kid's exact words.
 2. **key_moments**: Timestamps where the kid introduces something important (a character, a vehicle, a building, a conflict). These are the best frames to extract.
 3. **story_beats**: The narrative structure — what's the setup, conflict, and stakes?
 4. **camera_notes**: Based on when the kid pauses or lingers (longer segments), what areas are most important to show?
-5. **backstory**: A clean version of what the kid said, organized into a coherent backstory paragraph.
+5. **backstory**: A clean version of what the kid said, organized into a coherent backstory paragraph."""
+            }],
+        )
 
-Return JSON:
-{{
-  "characters": [{{"name": "string", "description": "string", "personality": "string", "role": "string"}}],
-  "key_moments": [{{"timestamp": number, "description": "string"}}],
-  "story_beats": {{"setup": "string", "conflict": "string", "stakes": "string"}},
-  "camera_notes": ["string"],
-  "backstory": "string"
-}}"""
-        }],
-    )
+        for block in message.content:
+            if getattr(block, "type", None) == "tool_use":
+                return block.input or {}
 
-    return repair_and_parse_json(message.content[0].text)
+        # No tool_use block — fall back to legacy text parse
+        for block in message.content:
+            if getattr(block, "type", None) == "text":
+                try:
+                    return repair_and_parse_json(block.text)
+                except Exception:
+                    pass
+        logger.warning("Narration intelligence: no tool_use or parseable text in response")
+        return {}
+    except Exception as e:
+        logger.warning(f"Narration intelligence extraction failed: {e}")
+        return {}
 
 
 # --- Phase 3: Smart Frame Extraction ---
@@ -247,11 +302,15 @@ async def process_video_intake(scene_id: str, video_storage_path: str) -> dict:
             transcript = await _transcribe_verbose(audio_path)
             logger.info(f"[{scene_id}] Transcribed: {len(transcript['text'])} chars, {len(transcript['segments'])} segments")
 
-        # --- Step 2: Extract narration intelligence ---
+        # --- Step 2: Extract narration intelligence (never fatal) ---
         intelligence = {}
         if transcript["text"]:
             logger.info(f"[{scene_id}] Extracting narration intelligence...")
-            intelligence = await _extract_narration_intelligence(transcript)
+            try:
+                intelligence = await _extract_narration_intelligence(transcript) or {}
+            except Exception as e:
+                logger.warning(f"[{scene_id}] Narration intelligence skipped: {e}")
+                intelligence = {}
             logger.info(f"[{scene_id}] Found {len(intelligence.get('characters', []))} characters, {len(intelligence.get('key_moments', []))} key moments")
 
         # --- Step 3: Smart frame extraction ---
