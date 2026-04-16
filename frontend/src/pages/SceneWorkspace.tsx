@@ -4,6 +4,8 @@ import { Header } from '../components/layout/Header'
 import { MediaGrid } from '../components/workspace/MediaGrid'
 import { MediaUploader } from '../components/workspace/MediaUploader'
 import { BackstoryEditor } from '../components/workspace/BackstoryEditor'
+import { DescriptionForm } from '../components/workspace/DescriptionForm'
+import type { StructuredDescription } from '../types/shotlist'
 import { MakeMovieButton } from '../components/workspace/MakeMovieButton'
 import { VoiceoverRecorder } from '../components/workspace/VoiceoverRecorder'
 import { Modal } from '../components/ui/Modal'
@@ -49,6 +51,12 @@ export function SceneWorkspace() {
     if (!id) return
     await updateScene(id, { backstory: value })
     setScene(prev => prev ? { ...prev, backstory: value } : prev)
+  }
+
+  const handleDescriptionChange = async (value: StructuredDescription) => {
+    if (!id) return
+    await updateScene(id, { structured_description: value as Record<string, unknown> })
+    setScene(prev => prev ? { ...prev, structured_description: value as Record<string, unknown> } : prev)
   }
 
   const [videoProcessing, setVideoProcessing] = useState(false)
@@ -292,22 +300,39 @@ export function SceneWorkspace() {
           />
         </section>
 
-        {/* Backstory section */}
-        <section className="bg-surface rounded-xl p-5 border border-border space-y-3">
-          <BackstoryEditor
-            value={scene.backstory || ''}
-            onChange={handleBackstoryChange}
+        {/* The Brief — structured description */}
+        <section className="bg-surface rounded-xl p-5 border border-border">
+          <DescriptionForm
+            value={(scene.structured_description || {}) as StructuredDescription}
+            onChange={handleDescriptionChange}
           />
-          {photoCount > 0 && (
-            <button
-              onClick={handleSuggestBackstory}
-              disabled={suggesting}
-              className="text-sm px-4 py-2 bg-accent/10 text-accent border border-accent/30 rounded-lg hover:bg-accent/20 transition-colors disabled:opacity-50"
-            >
-              {suggesting ? 'Looking at your photos...' : '✨ Suggest a backstory from my photos'}
-            </button>
-          )}
         </section>
+
+        {/* Legacy backstory (for video transcription + freeform notes) */}
+        {scene.backstory && (
+          <section className="bg-surface rounded-xl p-5 border border-border space-y-3">
+            <details>
+              <summary className="text-sm text-text-secondary cursor-pointer">
+                Freeform notes (from video transcription or old scenes)
+              </summary>
+              <div className="mt-3">
+                <BackstoryEditor
+                  value={scene.backstory || ''}
+                  onChange={handleBackstoryChange}
+                />
+                {photoCount > 0 && (
+                  <button
+                    onClick={handleSuggestBackstory}
+                    disabled={suggesting}
+                    className="mt-2 text-sm px-4 py-2 bg-accent/10 text-accent border border-accent/30 rounded-lg hover:bg-accent/20 transition-colors disabled:opacity-50"
+                  >
+                    {suggesting ? 'Looking at your photos...' : '✨ Suggest from photos'}
+                  </button>
+                )}
+              </div>
+            </details>
+          </section>
+        )}
 
         {/* Movie settings */}
         <section className="bg-surface rounded-xl p-5 border border-border space-y-4">
@@ -336,14 +361,19 @@ export function SceneWorkspace() {
         </section>
 
         {/* Make My Movie — only show for draft/ready/failed scenes */}
-        {isDraft && (
-          <MakeMovieButton
-            photoCount={photoCount}
-            backstoryLength={scene.backstory?.length || 0}
-            onClick={handleMakeMovie}
-            disabled={triggering}
-          />
-        )}
+        {isDraft && (() => {
+          const sd = (scene.structured_description || {}) as StructuredDescription
+          const briefLength = (sd.what_happens || '').length + (sd.one_liner || '').length
+          const effectiveLength = Math.max(briefLength, scene.backstory?.length || 0)
+          return (
+            <MakeMovieButton
+              photoCount={photoCount}
+              backstoryLength={effectiveLength}
+              onClick={handleMakeMovie}
+              disabled={triggering}
+            />
+          )
+        })()}
       </main>
     </div>
   )

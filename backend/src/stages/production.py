@@ -89,6 +89,15 @@ DEFAULT_VOICE_SETTINGS = {"stability": 0.45, "similarity_boost": 0.75, "style": 
 # Narrator gets special cinematic settings
 NARRATOR_SETTINGS = {"stability": 0.55, "similarity_boost": 0.85, "style": 0.7, "use_speaker_boost": True}
 
+# TRAILER NARRATOR — deep, dramatic, movie-trailer-guy voice
+TRAILER_NARRATOR_VOICE = "nPczCjzI2devNBz1zQrb"  # Brian — deep, resonant, comforting
+TRAILER_NARRATOR_SETTINGS = {
+    "stability": 0.65,
+    "similarity_boost": 0.90,
+    "style": 0.80,
+    "use_speaker_boost": True,
+}
+
 
 # --- Visual-First Prompt Builder ---
 
@@ -137,6 +146,86 @@ def _build_visual_prompt(scene_bible: dict, screenplay_scene: dict) -> str:
     parts.append(FIDELITY_DIRECTIVE)
 
     return "\n".join(parts)
+
+
+NOLAN_FORBIDDEN = """
+FORBIDDEN — do NOT do any of these:
+- Flying, floating, levitating anything
+- Walking or running minifigs (stop-motion minifigs do NOT walk)
+- Morphing or transforming Lego pieces
+- New characters or objects appearing that aren't in the reference photo
+- Pieces disappearing from the scene
+- Camera clipping through walls or vehicles
+- Extreme zooms that don't match the reference perspective
+- Cuts within the clip (this is ONE continuous shot)
+- Impossible perspectives (top-down when reference is side-on, etc.)
+- Animals not in the reference
+- Humans (real people) — only Lego minifigs
+- Text overlays, subtitles, captions
+- Dialogue or character mouth movement
+- Cinematic distortion that breaks the physical-Lego look
+"""
+
+
+def build_nolan_shot_prompt(
+    shot: dict,
+    scene_bible: dict,
+    photo_filename: str | None = None,
+) -> str:
+    """Build a TIGHT Kie.ai prompt for a single shot. Nolan-style constraints."""
+
+    subject = shot.get("subject", "the scene")
+    motion = shot.get("motion", "static hold")
+    camera = shot.get("camera", "static")
+    description = shot.get("description", "")
+    duration = shot.get("duration_seconds", 5)
+
+    # Build visual anchor from scene bible (brief — Claude Vision handles details)
+    visual_anchor = []
+    setting = scene_bible.get("setting", {})
+    if setting.get("description"):
+        visual_anchor.append(f"Scene setting: {setting['description']}.")
+
+    # List every physical element concisely
+    vehicles = scene_bible.get("vehicles", [])
+    if vehicles:
+        v_list = ", ".join(f"{v.get('color','')} {v.get('type','vehicle')}" for v in vehicles[:5])
+        visual_anchor.append(f"Vehicles in scene: {v_list}.")
+
+    cast = scene_bible.get("cast", [])
+    if cast:
+        visual_anchor.append(f"Minifigs in scene: {len(cast)} characters including {', '.join(c.get('description','') for c in cast[:3])}.")
+
+    visual_text = "\n".join(visual_anchor)
+
+    prompt = f"""[SUBJECT]
+Stop-motion animation of a real physical Lego scene photographed on a baseplate.
+This is a SINGLE SHOT, {duration} seconds, with MINIMAL motion.
+Focus of this shot: {subject}.
+{description}
+
+[EXACT VISUAL MATCH — DO NOT DEVIATE]
+The frame shows exactly what is in the reference photo. Same Lego pieces, same colors,
+same positions, same baseplate. Do NOT add, remove, or change any elements.
+{visual_text}
+
+[ALLOWED MOTION — ONLY THIS]
+{motion}.
+Nothing else in the frame moves. The baseplate, buildings, vehicles, and props are STATIC
+unless the motion above specifies otherwise.
+
+[CAMERA]
+{camera}.
+Keep camera movement SUBTLE. No shake, no swoop, no impossible angles.
+
+[STYLE]
+Stop-motion Lego aesthetic. Real Lego bricks on a real baseplate.
+Warm cinematic lighting. Shallow depth of field with focus on {subject}.
+Film grain. 24fps. 16:9 aspect ratio.
+{NOLAN_FORBIDDEN}
+"""
+
+    return prompt
 
 
 # --- Kie.ai Video Generation ---
@@ -319,6 +408,100 @@ async def generate_scene_videos(
 
         if on_progress:
             on_progress(num, len(screenplay["scenes"]))
+
+    return storage_paths
+
+
+async def _generate_trailer_speech(text: str) -> bytes:
+    """Generate speech with trailer-voice settings. Deep, dramatic, Brian voice."""
+    settings = TRAILER_NARRATOR_SETTINGS
+    async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{TRAILER_NARRATOR_VOICE}",
+            headers={
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": settings,
+            },
+        )
+        if res.status_code != 200:
+            raise RuntimeError(f"ElevenLabs narrator error {res.status_code}: {res.text[:200]}")
+        return res.content
+
+
+async def generate_trailer_narration(
+    scene_id: str,
+    shot_list: dict,
+) -> dict:
+    """Generate trailer-voice narration for each narrator line.
+    Returns dict mapping line index → storage path."""
+    narrator_paths = {}
+    lines = shot_list.get("narrator_lines", [])
+
+    for i, line_data in enumerate(lines):
+        text = line_data.get("line", "")
+        if not text:
+            continue
+
+        logger.info(f"[{scene_id}] Narrator line {i+1}/{len(lines)}: \"{text[:60]}...\"")
+        audio = await _generate_trailer_speech(text)
+        path = f"scenes/{scene_id}/production/audio/narrator_{i:02d}.mp3"
+        _storage_upload(path, audio, "audio/mpeg")
+        narrator_paths[f"narrator_{i:02d}"] = {
+            "path": path,
+            "time_seconds": line_data.get("time_seconds", i * 8),
+            "line": text,
+        }
+
+    logger.info(f"[{scene_id}] Generated {len(narrator_paths)} narrator lines")
+    return narrator_paths
+
+
+async def generate_shot_list_videos(
+    scene_id: str,
+    shot_list: dict,
+    scene_bible: dict,
+    on_progress: callable = None,
+) -> list[str]:
+    """Generate video clips for a TRAILER-style shot list with Nolan-tight prompts.
+    One reference photo per shot. Short duration. Strict motion constraints."""
+    photo_urls = await _get_photo_urls(scene_id)
+    if not photo_urls:
+        raise ValueError("No photos found for video generation")
+
+    storage_paths = []
+    shots = shot_list.get("shots", [])
+
+    for shot in shots:
+        num = shot.get("shot_number", len(storage_paths) + 1)
+        logger.info(f"[{scene_id}] Generating shot {num}/{len(shots)} ({shot.get('type', '?')})...")
+
+        prompt = build_nolan_shot_prompt(shot, scene_bible)
+
+        # Pick the best reference photo for this shot
+        ref_idx = shot.get("reference_photo_index", 0)
+        if ref_idx >= len(photo_urls):
+            ref_idx = 0
+        ref_photos = [photo_urls[ref_idx]]
+        # Also include one more photo as context
+        if len(photo_urls) > 1 and ref_idx != 0:
+            ref_photos.append(photo_urls[0])
+
+        task_id = await _submit_video_generation(prompt, ref_photos)
+        video_url = await _poll_video(task_id)
+        video_bytes = await _download_bytes(video_url)
+
+        storage_path = f"scenes/{scene_id}/production/video/shot_{num:02d}.mp4"
+        _storage_upload(storage_path, video_bytes, "video/mp4")
+        storage_paths.append(storage_path)
+        logger.info(f"[{scene_id}] Shot {num} uploaded ({len(video_bytes)} bytes)")
+
+        if on_progress:
+            on_progress(num, len(shots))
 
     return storage_paths
 

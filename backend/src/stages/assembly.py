@@ -236,6 +236,110 @@ def _add_silent_audio(video_path: str, output_path: str):
     ], desc="replace with silent audio")
 
 
+def _trim_video(video_path: str, duration: float, output_path: str):
+    """Trim a video to exact duration with silent audio."""
+    _run_ffmpeg([
+        "-i", video_path,
+        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={duration}",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-t", str(duration),
+        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:a", "aac",
+        output_path,
+    ], desc=f"trim to {duration}s")
+
+
+def _concat_shots_hard_cuts(shot_paths: list[str], output_path: str):
+    """Concatenate shots with hard cuts (no crossfades — trailer style)."""
+    list_file = output_path + ".txt"
+    with open(list_file, "w") as f:
+        for path in shot_paths:
+            f.write(f"file '{path}'\n")
+
+    _run_ffmpeg([
+        "-f", "concat", "-safe", "0", "-i", list_file,
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        output_path,
+    ], desc="concat shots (hard cuts)")
+    os.remove(list_file)
+
+
+def _apply_trailer_narrator_mix(
+    video_path: str,
+    music_path: str,
+    narrator_lines: list[dict],
+    narrator_files: dict,
+    output_path: str,
+):
+    """Mix the final trailer: video + music (ducked) + narrator lines at timestamps.
+
+    narrator_lines: [{"time_seconds": N, "line": "..."}]
+    narrator_files: dict[key → {"path": local_path, ...}]
+    """
+    inputs = [
+        "-i", video_path,
+        "-i", music_path,
+    ]
+    narrator_paths_ordered = []
+    for i, line in enumerate(narrator_lines):
+        key = f"narrator_{i:02d}"
+        if key in narrator_files:
+            narrator_paths_ordered.append((line, narrator_files[key]["path"]))
+            inputs.extend(["-i", narrator_files[key]["path"]])
+
+    if not narrator_paths_ordered:
+        # No narrator — just add music over video (muted original audio)
+        _run_ffmpeg([
+            "-i", video_path, "-i", music_path,
+            "-filter_complex",
+            "[1:a]volume=0.5[music]",
+            "-map", "0:v:0", "-map", "[music]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-shortest", output_path,
+        ], desc="mix music only")
+        return
+
+    # Build filter:
+    # 1. Music at 40% baseline, ducked to 12% when narrator speaks
+    # 2. Each narrator line delayed to its timestamp
+    filters = []
+
+    # Delayed narrator tracks
+    narrator_mix_inputs = []
+    for i, (line, _) in enumerate(narrator_paths_ordered):
+        delay_ms = int(line.get("time_seconds", i * 8) * 1000)
+        idx = 2 + i
+        filters.append(f"[{idx}:a]volume=1.8,adelay={delay_ms}|{delay_ms}[n{i}]")
+        narrator_mix_inputs.append(f"[n{i}]")
+
+    # Combine all narrator tracks
+    narrator_mix_str = "".join(narrator_mix_inputs)
+    filters.append(f"{narrator_mix_str}amix=inputs={len(narrator_mix_inputs)}:duration=longest:normalize=0[narration]")
+
+    # Music ducks under narration using sidechaincompress
+    filters.append(
+        "[1:a]volume=0.4[music_pre];"
+        "[music_pre][narration]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=300[music_ducked]"
+    )
+
+    # Final mix: ducked music + narration
+    filters.append("[music_ducked][narration]amix=inputs=2:duration=longest:normalize=0[final_audio]")
+
+    # Apply reverb + loudness normalize on final audio
+    filters.append("[final_audio]aecho=0.8:0.7:60:0.25,loudnorm=I=-14:TP=-1.5:LRA=11[mixed]")
+
+    _run_ffmpeg(
+        inputs + [
+            "-filter_complex", ";".join(filters),
+            "-map", "0:v:0", "-map", "[mixed]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-shortest", output_path,
+        ],
+        desc="trailer final mix",
+    )
+
+
 def _extract_thumbnail(video_path: str, output_path: str):
     """Extract a thumbnail from a video at 5 seconds."""
     _run_ffmpeg([
@@ -349,3 +453,136 @@ async def assemble_movie(
         if os.path.exists(work_dir):
             shutil.rmtree(work_dir, ignore_errors=True)
             logger.info(f"[{scene_id}] Cleaned up temp directory")
+
+
+async def assemble_trailer(
+    scene_id: str,
+    shot_list: dict,
+    shot_video_paths: list[str],
+    narrator_paths: dict,
+    music_mood: str,
+    director_name: str,
+) -> tuple[str, str]:
+    """
+    Assemble the TRAILER-style final movie.
+
+    1. Download all shot videos
+    2. Trim each to its shot duration
+    3. Concat shots with hard cuts
+    4. Generate music track matching mood
+    5. Generate title card + end card
+    6. Mix music (ducked) + narrator lines at timestamps
+    7. Final video with title/end cards bookending
+    """
+    from src.utils.music_library import generate_music_track
+
+    sb = get_supabase()
+    work_dir = os.path.join(TEMP_BASE, f"{scene_id}_trailer")
+    _ensure_dir(work_dir)
+    _ensure_dir(os.path.join(work_dir, "shots"))
+
+    try:
+        shots = shot_list.get("shots", [])
+        narrator_lines = shot_list.get("narrator_lines", [])
+
+        # --- 1. Download shot videos ---
+        logger.info(f"[{scene_id}] Downloading {len(shot_video_paths)} shot videos...")
+        local_shots = []
+        for sp in shot_video_paths:
+            local = os.path.join(work_dir, os.path.basename(sp))
+            await _download_from_storage(sp, local)
+            local_shots.append(local)
+
+        # --- 2. Download narrator audio ---
+        logger.info(f"[{scene_id}] Downloading narrator audio...")
+        narrator_files = {}
+        for key, info in narrator_paths.items():
+            local = os.path.join(work_dir, f"{key}.mp3")
+            await _download_from_storage(info["path"], local)
+            narrator_files[key] = {"path": local, "time_seconds": info.get("time_seconds", 0), "line": info.get("line", "")}
+
+        # --- 3. Trim each shot to its specified duration ---
+        logger.info(f"[{scene_id}] Trimming shots to specified durations...")
+        trimmed_shots = []
+        for i, video_local in enumerate(local_shots):
+            shot_data = shots[i] if i < len(shots) else {}
+            duration = shot_data.get("duration_seconds", 5)
+            trimmed = os.path.join(work_dir, "shots", f"trim_{i:02d}.mp4")
+            _trim_video(video_local, duration, trimmed)
+            trimmed_shots.append(trimmed)
+
+        # --- 4. Concat shots with hard cuts ---
+        logger.info(f"[{scene_id}] Concatenating {len(trimmed_shots)} shots...")
+        action_sequence = os.path.join(work_dir, "action.mp4")
+        if len(trimmed_shots) == 1:
+            shutil.copy(trimmed_shots[0], action_sequence)
+        else:
+            _concat_shots_hard_cuts(trimmed_shots, action_sequence)
+
+        # --- 5. Generate music track ---
+        logger.info(f"[{scene_id}] Generating music track ({music_mood})...")
+        # Get action sequence duration
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", action_sequence],
+            capture_output=True, text=True, timeout=10,
+        )
+        import json as _json
+        try:
+            action_duration = float(_json.loads(probe.stdout).get("format", {}).get("duration", 60))
+        except Exception:
+            action_duration = 60.0
+
+        music_path = os.path.join(work_dir, "music.mp3")
+        music_ok = generate_music_track(music_mood, music_path, duration=action_duration + 2)
+        if not music_ok:
+            # Fallback: silent music
+            _run_ffmpeg([
+                "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={action_duration + 2}",
+                "-c:a", "libmp3lame", "-q:a", "4", music_path,
+            ], desc="silent music fallback")
+
+        # --- 6. Mix video + music + narrator ---
+        logger.info(f"[{scene_id}] Final trailer mix...")
+        mixed = os.path.join(work_dir, "mixed.mp4")
+        _apply_trailer_narrator_mix(action_sequence, music_path, narrator_lines, narrator_files, mixed)
+
+        # --- 7. Add title + end title cards ---
+        title_text = shot_list.get("title", "Untitled")
+        tagline = shot_list.get("tagline", "")
+
+        logger.info(f"[{scene_id}] Creating title cards...")
+        title_card = os.path.join(work_dir, "title.mp4")
+        end_card = os.path.join(work_dir, "end.mp4")
+        _create_title_card(f"LEGO WORLDS presents\\n\\n{title_text}", title_card, duration=3.5)
+        _create_title_card(f"{title_text}\\n\\nA film by {director_name}", end_card, duration=4.0)
+
+        # --- 8. Final concat: title → mixed → end ---
+        logger.info(f"[{scene_id}] Final assembly...")
+        final_local = os.path.join(work_dir, "final.mp4")
+        _concat_shots_hard_cuts([title_card, mixed, end_card], final_local)
+
+        # --- 9. Thumbnail ---
+        thumb_local = os.path.join(work_dir, "thumbnail.jpg")
+        _extract_thumbnail(final_local, thumb_local)
+
+        # --- 10. Upload ---
+        logger.info(f"[{scene_id}] Uploading final trailer...")
+        final_storage = f"scenes/{scene_id}/output/final.mp4"
+        thumb_storage = f"scenes/{scene_id}/output/thumbnail.jpg"
+
+        sb = get_supabase()
+        with open(final_local, "rb") as f:
+            sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
+                final_storage, f.read(), {"content-type": "video/mp4", "upsert": "true"}
+            )
+        with open(thumb_local, "rb") as f:
+            sb.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
+                thumb_storage, f.read(), {"content-type": "image/jpeg", "upsert": "true"}
+            )
+
+        logger.info(f"[{scene_id}] Trailer complete!")
+        return final_storage, thumb_storage
+
+    finally:
+        if os.path.exists(work_dir):
+            shutil.rmtree(work_dir, ignore_errors=True)

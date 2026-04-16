@@ -4,8 +4,13 @@ from src.supabase_client import get_supabase
 from src.config import SUPABASE_STORAGE_BUCKET
 from src.stages.scene_analysis import analyze_scene
 from src.stages.screenplay import generate_screenplay
-from src.stages.production import generate_scene_videos, generate_scene_audio, cleanup_production_files
-from src.stages.assembly import assemble_movie
+from src.stages.shot_list import generate_shot_list
+from src.stages.production import (
+    generate_scene_videos, generate_scene_audio, cleanup_production_files,
+    generate_shot_list_videos, generate_trailer_narration,
+)
+from src.stages.assembly import assemble_movie, assemble_trailer
+from src.utils.music_library import pick_music_mood
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,191 @@ def _update_scene(scene_id: str, **fields):
 def _update_job(job_id: str, **fields):
     sb = get_supabase()
     sb.table("jobs").update(fields).eq("id", job_id).execute()
+
+
+async def run_analysis_and_shot_list(scene_id: str, job_id: str):
+    """NEW NOLAN FLOW: scene analysis + shot list generation.
+
+    1. Claude Vision analyzes photos/video → scene_bible
+    2. Claude generates shot list (6-10 shots) + trailer narration lines
+    """
+    sb = get_supabase()
+
+    try:
+        scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
+        backstory = scene.get("backstory", "")
+        structured_description = scene.get("structured_description") or {}
+        director_name = scene.get("director_name", "Cary")
+
+        # Count photos for shot list generator
+        media = sb.table("scene_media").select("id").eq("scene_id", scene_id).eq("file_type", "photo").execute()
+        num_photos = len(media.data)
+
+        # Stage 1: Scene Analysis
+        _update_scene(scene_id, status="analyzing")
+        _update_job(job_id, status="analyzing", current_stage="scene_analysis", progress_pct=10)
+        logger.info(f"[{scene_id}] Starting scene analysis...")
+        scene_bible = await analyze_scene(scene_id, backstory)
+
+        _update_scene(scene_id, scene_bible=scene_bible)
+        _update_job(job_id, progress_pct=45, stages_completed=["scene_analysis"])
+        logger.info(f"[{scene_id}] Scene analysis complete")
+
+        # Stage 2: Shot list + trailer narration
+        _update_job(job_id, status="writing", current_stage="shot_list", progress_pct=50)
+        logger.info(f"[{scene_id}] Generating shot list + trailer narration...")
+        shot_list = await generate_shot_list(
+            scene_bible=scene_bible,
+            structured_description=structured_description,
+            backstory=backstory,
+            director_name=director_name,
+            num_photos=num_photos,
+        )
+
+        _update_scene(
+            scene_id,
+            shot_list=shot_list,
+            shot_list_version=scene.get("shot_list_version", 0) + 1,
+            music_track=shot_list.get("music_mood", "tension_build"),
+            status="screenplay_review",
+        )
+        _update_job(
+            job_id, status="awaiting_approval", current_stage="screenplay_review",
+            progress_pct=100,
+            stages_completed=["scene_analysis", "shot_list"],
+            completed_at=_now(),
+        )
+        logger.info(f"[{scene_id}] Shot list ready: {shot_list.get('title', '?')} — {len(shot_list.get('shots', []))} shots")
+
+    except Exception as e:
+        logger.error(f"[{scene_id}] Pipeline failed: {e}")
+        _update_scene(scene_id, status="failed")
+        _update_job(job_id, status="failed", error=str(e))
+        raise
+
+
+async def run_shot_list_revision(scene_id: str, job_id: str, feedback: str):
+    """Revise shot list with director feedback."""
+    sb = get_supabase()
+    try:
+        scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
+        scene_bible = scene.get("scene_bible")
+        structured_description = scene.get("structured_description") or {}
+        backstory = scene.get("backstory", "")
+        director_name = scene.get("director_name", "Cary")
+
+        if not scene_bible:
+            raise ValueError("No scene bible — run analysis first")
+
+        media = sb.table("scene_media").select("id").eq("scene_id", scene_id).eq("file_type", "photo").execute()
+        num_photos = len(media.data)
+
+        _update_scene(scene_id, status="analyzing", screenplay_feedback=feedback)
+        _update_job(job_id, status="writing", current_stage="shot_list_revision", progress_pct=30)
+
+        shot_list = await generate_shot_list(
+            scene_bible=scene_bible,
+            structured_description=structured_description,
+            backstory=backstory,
+            director_name=director_name,
+            num_photos=num_photos,
+            feedback=feedback,
+        )
+
+        _update_scene(
+            scene_id,
+            shot_list=shot_list,
+            shot_list_version=scene.get("shot_list_version", 0) + 1,
+            music_track=shot_list.get("music_mood", "tension_build"),
+            status="screenplay_review",
+        )
+        _update_job(
+            job_id, status="awaiting_approval", current_stage="screenplay_review",
+            progress_pct=100, completed_at=_now(),
+        )
+    except Exception as e:
+        logger.error(f"[{scene_id}] Revision failed: {e}")
+        _update_scene(scene_id, status="failed")
+        _update_job(job_id, status="failed", error=str(e))
+        raise
+
+
+async def run_trailer_production(scene_id: str, job_id: str):
+    """NEW NOLAN FLOW: shot videos + narrator + music → trailer.
+
+    1. Generate video for each shot (Kie.ai with Nolan-tight prompts)
+    2. Generate trailer narration (single deep voice)
+    3. Assemble trailer (quick cuts + music + narration)
+    """
+    sb = get_supabase()
+    try:
+        scene = sb.table("scenes").select("*").eq("id", scene_id).execute().data[0]
+        shot_list = scene.get("shot_list")
+        scene_bible = scene.get("scene_bible")
+        director_name = scene.get("director_name", "Cary")
+
+        if not shot_list or not scene_bible:
+            raise ValueError("Missing shot_list or scene_bible")
+
+        await cleanup_production_files(scene_id)
+
+        shots = shot_list.get("shots", [])
+
+        # --- Stage 1: Shot videos ---
+        _update_scene(scene_id, status="producing")
+        _update_job(job_id, status="producing", current_stage="video_generation", progress_pct=5)
+        logger.info(f"[{scene_id}] Generating {len(shots)} shot videos (Nolan-tight)...")
+
+        def on_video_progress(done: int, total: int):
+            pct = 5 + int((done / total) * 50)  # 5-55%
+            _update_job(job_id, progress_pct=pct, current_stage=f"video_scene_{done}_of_{total}")
+
+        shot_videos = await generate_shot_list_videos(
+            scene_id, shot_list, scene_bible, on_progress=on_video_progress,
+        )
+        _update_job(job_id, progress_pct=55, stages_completed=["video_generation"])
+        logger.info(f"[{scene_id}] {len(shot_videos)} shot videos done")
+
+        # --- Stage 2: Trailer narration ---
+        _update_job(job_id, current_stage="narrator", progress_pct=60)
+        logger.info(f"[{scene_id}] Generating trailer narration...")
+        narrator_paths = await generate_trailer_narration(scene_id, shot_list)
+        _update_job(
+            job_id, progress_pct=75,
+            stages_completed=["video_generation", "narrator"],
+        )
+
+        # --- Stage 3: Assembly ---
+        _update_scene(scene_id, status="assembling")
+        _update_job(job_id, status="assembling", current_stage="assembly", progress_pct=80)
+        logger.info(f"[{scene_id}] Assembling trailer...")
+
+        music_mood = pick_music_mood(shot_list.get("genre", ""), shot_list.get("mood", ""))
+
+        final_video_path, _thumb = await assemble_trailer(
+            scene_id=scene_id,
+            shot_list=shot_list,
+            shot_video_paths=shot_videos,
+            narrator_paths=narrator_paths,
+            music_mood=music_mood,
+            director_name=director_name,
+        )
+
+        final_url = sb.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(final_video_path)
+
+        _update_scene(scene_id, status="complete", final_video_url=final_url)
+        _update_job(
+            job_id, status="complete", current_stage="complete", progress_pct=100,
+            stages_completed=["video_generation", "narrator", "assembly"],
+            completed_at=_now(),
+        )
+        logger.info(f"[{scene_id}] Trailer complete! {final_url}")
+
+    except Exception as e:
+        logger.error(f"[{scene_id}] Trailer production failed: {e}")
+        _update_scene(scene_id, status="failed")
+        _update_job(job_id, status="failed", error=str(e))
+        raise
 
 
 async def run_analysis_and_screenplay(scene_id: str, job_id: str):

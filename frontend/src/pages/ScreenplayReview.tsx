@@ -3,6 +3,8 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Header } from '../components/layout/Header'
 import { StoryboardCard } from '../components/screenplay/StoryboardCard'
 import { NarratorCard } from '../components/screenplay/NarratorCard'
+import { ShotCard } from '../components/screenplay/ShotCard'
+import { NarratorTimeline } from '../components/screenplay/NarratorTimeline'
 import { FeedbackForm } from '../components/screenplay/FeedbackForm'
 import { GreenLightButton } from '../components/screenplay/GreenLightButton'
 import { ProgressTracker } from '../components/production/ProgressTracker'
@@ -10,6 +12,7 @@ import { useScenes } from '../hooks/useScenes'
 import { usePipeline } from '../hooks/usePipeline'
 import type { Scene } from '../types/scene'
 import type { Screenplay } from '../types/screenplay'
+import type { ShotList } from '../types/shotlist'
 
 export function ScreenplayReview() {
   const { id } = useParams<{ id: string }>()
@@ -99,6 +102,7 @@ export function ScreenplayReview() {
   const isComplete = scene.status === 'complete'
   const isReviewable = scene.status === 'screenplay_review'
   const screenplay = scene.screenplay as Screenplay | null
+  const shotList = scene.shot_list as ShotList | null
 
   return (
     <div className="min-h-screen bg-bg">
@@ -152,8 +156,55 @@ export function ScreenplayReview() {
           </div>
         )}
 
-        {/* Screenplay content */}
-        {screenplay && !isAnalyzing && (
+        {/* NEW: Shot list (Nolan trailer format) */}
+        {shotList && !isAnalyzing && (
+          <>
+            <div className="text-center space-y-2">
+              <p className="text-xs text-text-secondary uppercase tracking-wider">Lego Worlds presents</p>
+              <h1 className="text-3xl font-bold text-accent">{shotList.title}</h1>
+              {shotList.tagline && (
+                <p className="text-text-primary italic">"{shotList.tagline}"</p>
+              )}
+              <p className="text-text-secondary text-sm">
+                {shotList.shots?.length || 0} shots · {shotList.total_duration_seconds || 60}s trailer · {shotList.genre}
+              </p>
+            </div>
+
+            {/* Narrator timeline */}
+            {shotList.narrator_lines && shotList.narrator_lines.length > 0 && (
+              <NarratorTimeline
+                lines={shotList.narrator_lines}
+                totalDuration={shotList.total_duration_seconds || 60}
+              />
+            )}
+
+            {/* Shot cards */}
+            <div className="space-y-3">
+              <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">
+                The Shot List
+              </h2>
+              {shotList.shots?.map(shot => (
+                <ShotCard key={shot.shot_number} shot={shot} media={scene.media} />
+              ))}
+            </div>
+
+            {/* Feedback + Green Light */}
+            {isReviewable && (
+              <>
+                <FeedbackForm onSubmit={handleRevise} disabled={pipeline.polling} />
+                <div className="space-y-2">
+                  <GreenLightButton onClick={handleGreenlight} disabled={pipeline.polling} />
+                  <p className="text-center text-xs text-text-secondary">
+                    Production takes ~10-15 minutes
+                  </p>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {/* LEGACY: Screenplay fallback (for old scenes) */}
+        {!shotList && screenplay && !isAnalyzing && (
           <>
             <div className="text-center space-y-2">
               <h1 className="text-2xl font-bold text-accent">{screenplay.title}</h1>
@@ -162,43 +213,33 @@ export function ScreenplayReview() {
               </p>
             </div>
 
-            {/* Narrator Intro */}
             <NarratorCard label="Narrator Intro" text={screenplay.narrator_intro} />
 
-            {/* Scene cards */}
             <div className="space-y-4">
               {screenplay.scenes.map(s => (
                 <StoryboardCard key={s.scene_number} scene={s} />
               ))}
             </div>
 
-            {/* Narrator Outro */}
             <NarratorCard label="Narrator Outro" text={screenplay.narrator_outro} />
 
-            {/* Credits */}
             <div className="text-center text-sm text-text-secondary space-y-1 py-4">
               <p>Directed by <span className="text-text-primary">{screenplay.credits.directed_by}</span></p>
-              <p>Built by <span className="text-text-primary">{screenplay.credits.built_by}</span></p>
-              <p>Produced by <span className="text-text-primary">{screenplay.credits.produced_by}</span></p>
             </div>
 
-            {/* Feedback + Green Light — only during review */}
             {isReviewable && (
               <>
                 <FeedbackForm onSubmit={handleRevise} disabled={pipeline.polling} />
                 <div className="space-y-2">
                   <GreenLightButton onClick={handleGreenlight} disabled={pipeline.polling} />
-                  <p className="text-center text-xs text-text-secondary">
-                    Estimated production time: ~10-15 minutes
-                  </p>
                 </div>
               </>
             )}
           </>
         )}
 
-        {/* No screenplay yet and not analyzing */}
-        {!screenplay && !isAnalyzing && !isProducing && (
+        {/* No shot list or screenplay yet and not analyzing */}
+        {!shotList && !screenplay && !isAnalyzing && !isProducing && (
           <div className="text-center py-20 space-y-4">
             <span className="text-5xl block">🎬</span>
             <p className="text-text-secondary">No screenplay yet. Go back and hit "Make My Movie"!</p>

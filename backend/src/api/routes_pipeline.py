@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from src.api.auth import get_current_user
 from src.supabase_client import get_supabase
-from src.pipeline import run_analysis_and_screenplay, run_screenplay_revision, run_production, run_assembly_only, run_audio_and_assembly
+from src.pipeline import (
+    run_analysis_and_screenplay, run_screenplay_revision, run_production,
+    run_assembly_only, run_audio_and_assembly,
+    run_analysis_and_shot_list, run_shot_list_revision, run_trailer_production,
+)
 
 router = APIRouter(prefix="/api/scenes/{scene_id}", tags=["pipeline"])
 
@@ -36,34 +40,37 @@ async def trigger_analysis(
     background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ):
-    """Trigger scene analysis + screenplay generation."""
+    """Trigger scene analysis + shot list generation (Nolan flow)."""
     scene = _get_scene_or_404(scene_id, user["sub"])
 
     if scene["status"] not in ("draft", "ready", "failed"):
         raise HTTPException(status_code=400, detail=f"Cannot analyze scene in '{scene['status']}' status")
 
-    # Check requirements: 2+ photos, backstory 20+ chars
+    # Check requirements: 2+ photos, and EITHER structured_description OR backstory 20+ chars
     sb = get_supabase()
     media = sb.table("scene_media").select("id").eq("scene_id", scene_id).eq("file_type", "photo").execute()
     if len(media.data) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 photos")
-    if not scene.get("backstory") or len(scene["backstory"]) < 20:
-        raise HTTPException(status_code=400, detail="Backstory must be at least 20 characters")
+
+    has_structured = bool(scene.get("structured_description"))
+    has_backstory = scene.get("backstory") and len(scene["backstory"]) >= 20
+    if not has_structured and not has_backstory:
+        raise HTTPException(status_code=400, detail="Need a description (what's the movie about, who's in it, what happens)")
 
     job_id = _create_job(scene_id)
-    background_tasks.add_task(run_analysis_and_screenplay, scene_id, job_id)
+    background_tasks.add_task(run_analysis_and_shot_list, scene_id, job_id)
 
     return {"job_id": job_id, "status": "started"}
 
 
 @router.post("/revise")
-async def revise_screenplay(
+async def revise_shot_list(
     scene_id: str,
     body: ReviseRequest,
     background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ):
-    """Revise screenplay with director feedback."""
+    """Revise shot list with director feedback."""
     scene = _get_scene_or_404(scene_id, user["sub"])
 
     if scene["status"] != "screenplay_review":
@@ -72,32 +79,32 @@ async def revise_screenplay(
         raise HTTPException(status_code=400, detail="No scene bible — run analysis first")
 
     job_id = _create_job(scene_id)
-    background_tasks.add_task(run_screenplay_revision, scene_id, job_id, body.feedback)
+    background_tasks.add_task(run_shot_list_revision, scene_id, job_id, body.feedback)
 
     return {"job_id": job_id, "status": "revising"}
 
 
 @router.post("/greenlight")
-async def greenlight_screenplay(
+async def greenlight_shot_list(
     scene_id: str,
     background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ):
-    """Approve screenplay and trigger production pipeline."""
+    """Approve shot list and trigger trailer production."""
     scene = _get_scene_or_404(scene_id, user["sub"])
 
     if scene["status"] != "screenplay_review":
         raise HTTPException(status_code=400, detail="Scene must be in screenplay_review status")
-    if not scene.get("screenplay"):
-        raise HTTPException(status_code=400, detail="No screenplay to approve")
+    if not scene.get("shot_list"):
+        raise HTTPException(status_code=400, detail="No shot list to approve")
 
     sb = get_supabase()
     sb.table("scenes").update({"status": "approved"}).eq("id", scene_id).execute()
 
     job_id = _create_job(scene_id)
-    background_tasks.add_task(run_production, scene_id, job_id)
+    background_tasks.add_task(run_trailer_production, scene_id, job_id)
 
-    return {"job_id": job_id, "status": "producing", "message": "Lights, camera, action! Production started."}
+    return {"job_id": job_id, "status": "producing", "message": "Rolling camera — trailer in production."}
 
 
 @router.post("/retry-audio")

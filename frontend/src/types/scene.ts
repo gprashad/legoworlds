@@ -21,8 +21,12 @@ export interface Scene {
   music_mood: string | null
   scene_bible: Record<string, unknown> | null
   screenplay: Record<string, unknown> | null
+  shot_list: Record<string, unknown> | null
+  shot_list_version?: number
+  structured_description: Record<string, unknown> | null
   screenplay_feedback: string | null
   screenplay_version: number
+  music_track?: string | null
   voiceover_url: string | null
   final_video_url: string | null
   final_video_duration_seconds: number | null
@@ -57,4 +61,5 @@ export interface SceneUpdate {
   director_name?: string
   movie_style?: string
   music_mood?: string
+  structured_description?: Record<string, unknown>
 }

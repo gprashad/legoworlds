@@ -42,6 +42,7 @@ class SceneUpdate(BaseModel):
     director_name: Optional[str] = None
     movie_style: Optional[str] = None
     music_mood: Optional[str] = None
+    structured_description: Optional[dict] = None
 
 
 class MediaRegister(BaseModel):

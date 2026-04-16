@@ -122,6 +122,11 @@ async def analyze_scene(scene_id: str, backstory: str) -> dict:
     if not photos:
         raise ValueError(f"No photos found in storage for scene {scene_id}")
 
+    # Pull structured_description (Nolan brief) if available
+    sb = get_supabase()
+    scene_row = sb.table("scenes").select("structured_description").eq("id", scene_id).execute().data
+    structured_description = (scene_row[0].get("structured_description") if scene_row else None) or {}
+
     # Check for video intelligence from walkthrough processing
     video_intel = _get_video_intelligence(scene_id)
     narration_intel = video_intel.get("_narration_intelligence", {}) if video_intel else {}
@@ -166,7 +171,22 @@ async def analyze_scene(scene_id: str, backstory: str) -> dict:
         })
 
     # Build the analysis prompt with all intelligence
-    prompt_parts = [f"Backstory from the builder:\n{backstory}"]
+    prompt_parts = []
+
+    # Nolan brief (PRIMARY input — what the builder wants)
+    if structured_description:
+        prompt_parts.append("BUILDER'S BRIEF (use this to guide your analysis):")
+        if structured_description.get("one_liner"):
+            prompt_parts.append(f"  Logline: {structured_description['one_liner']}")
+        if structured_description.get("characters"):
+            prompt_parts.append(f"  Characters: {structured_description['characters']}")
+        if structured_description.get("what_happens"):
+            prompt_parts.append(f"  Story: {structured_description['what_happens']}")
+        if structured_description.get("mood"):
+            prompt_parts.append(f"  Mood: {structured_description['mood']}")
+
+    if backstory:
+        prompt_parts.append(f"\nAdditional notes:\n{backstory}")
 
     # Phase 2: Narration intelligence
     if character_hints:
