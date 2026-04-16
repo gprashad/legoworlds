@@ -52,7 +52,13 @@ Kid opens app, taps "New Scene", gives it a name.
 - **Option B:** 30-60s video walkthrough
 - If video: we extract frames AND transcribe (transcription is supplementary context, not primary)
 
-### Stage 3: Description (THE MAIN INPUT)
+### Stage 3: Description (THE SOURCE MATERIAL)
+**His words are the BRIEF. Claude transforms them into trailer narration.**
+
+The kid's raw description is intelligence — who the characters are, what happens, what the mood is. Claude then writes the actual narrator lines in proper trailer-voice cadence ("In a world...", "One man...", "But fate...", etc.).
+
+The kid's description is NEVER read word-for-word. It's the director's brief. Claude is the trailer copywriter.
+
 **This is the most important step. We prompt the kid clearly.**
 
 The backstory editor becomes a **guided brief form**:
@@ -89,9 +95,26 @@ The backstory editor becomes a **guided brief form**:
 
 This is structured. We know exactly what goes where. No more free-form guessing.
 
-### Stage 4: Shot List Generation (replaces "screenplay")
+### Stage 4: Shot List + Trailer Narration Generation (replaces "screenplay")
 
-Claude Sonnet generates a **shot list**, not a screenplay. Think storyboard, not dialogue:
+Claude Sonnet takes the kid's brief and generates:
+1. A **shot list** (6-10 shots with specific motion/camera directions)
+2. **Trailer narration lines** written in cinematic voice (NOT the kid's words verbatim)
+
+**Example transformation:**
+
+Kid's description:
+> "The bank robber is trying to steal the money. The cop is after him. They crash into each other. The robber drops the money."
+
+Claude generates narration:
+> 0:05 — "In a city of plastic and possibility..."
+> 0:12 — "One thief thought he could outrun justice."
+> 0:20 — "He was wrong."
+> 0:30 — "Some falls..."
+> 0:40 — "...are longer than they look."
+> 0:55 — "THE HEIST. A film by [kid name]."
+
+Same story beats, blockbuster delivery.
 
 ```json
 {
