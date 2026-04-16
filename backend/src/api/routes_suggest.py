@@ -60,7 +60,7 @@ Keep it playful and inspiring — this should make the kid excited to build on t
 
     client = anthropic.Anthropic()
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-opus-4-6",
         max_tokens=300,
         messages=[{"role": "user", "content": content}],
     )
