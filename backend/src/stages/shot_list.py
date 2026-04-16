@@ -142,7 +142,7 @@ Output ONLY JSON, no markdown fences."""
 
     client = anthropic.Anthropic()
     message = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-opus-4-7",
         max_tokens=3000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],

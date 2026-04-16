@@ -334,7 +334,7 @@ Return JSON only: {"score": N, "issues": ["specific issue 1", "specific issue 2"
         import anthropic
         client = anthropic.Anthropic()
         message = client.messages.create(
-            model="claude-opus-4-6",
+            model="claude-opus-4-7",
             max_tokens=200,
             messages=[{"role": "user", "content": content}],
         )

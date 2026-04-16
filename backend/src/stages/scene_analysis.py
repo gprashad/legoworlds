@@ -230,7 +230,7 @@ Return ONLY the JSON object, no markdown fences or explanation.""")
 
     client = anthropic.Anthropic()
     message = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-opus-4-7",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}],
