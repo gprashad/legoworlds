@@ -145,34 +145,50 @@ def _overlay_audio(video_path: str, audio_path: str, output_path: str, audio_vol
 
 
 def _mix_scene_audio(video_path: str, dialogue_paths: list[str], sfx_paths: list[str], output_path: str):
-    """Mix dialogue and SFX onto a video scene with proper levels."""
-    inputs = ["-i", video_path]
-    audio_count = 1  # [0] = video
-
-    for d in dialogue_paths:
-        inputs.extend(["-i", d])
-        audio_count += 1
-    for s in sfx_paths:
-        inputs.extend(["-i", s])
-        audio_count += 1
-
-    if audio_count == 1:
-        # No extra audio, just ensure silent track exists
+    """Mix dialogue and SFX onto a video scene.
+    IGNORES the video's original audio entirely to prevent double voices from Kie.ai."""
+    if not dialogue_paths and not sfx_paths:
         _add_silent_audio(video_path, output_path)
         return
 
-    # Build filter: video silent bg + dialogue at full + sfx at 50%
+    # Generate silent audio for video + mix ONLY our dialogue/sfx on top
+    inputs = [
+        "-i", video_path,
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+    ]
+
+    for d in dialogue_paths:
+        inputs.extend(["-i", d])
+    for s in sfx_paths:
+        inputs.extend(["-i", s])
+
     filters = []
     mix_inputs = []
 
-    # Video's audio (silent or very quiet)
-    filters.append(f"[0:a]volume=0.05[bg]")
+    # Silent base (from anullsrc at index 1) — this replaces ANY built-in audio
+    filters.append(f"[1:a]volume=0[bg]")
     mix_inputs.append("[bg]")
 
-    idx = 1
-    for _ in dialogue_paths:
-        filters.append(f"[{idx}:a]volume=1.0,adelay=0|0[d{idx}]")
+    # Dialogue starts at input index 2 (0=video, 1=silence)
+    # Space dialogue sequentially so lines don't overlap
+    idx = 2
+    current_delay_ms = 500  # start 0.5s into the scene
+    for d_path in dialogue_paths:
+        # Get duration of this dialogue line
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", d_path],
+            capture_output=True, text=True, timeout=5,
+        )
+        try:
+            import json as _j
+            line_duration = float(_j.loads(probe.stdout).get("format", {}).get("duration", 2.0))
+        except Exception:
+            line_duration = 2.0
+
+        filters.append(f"[{idx}:a]volume=1.5,adelay={current_delay_ms}|{current_delay_ms}[d{idx}]")
         mix_inputs.append(f"[d{idx}]")
+
+        current_delay_ms += int(line_duration * 1000) + 300  # 0.3s gap between lines
         idx += 1
 
     for _ in sfx_paths:
@@ -181,13 +197,13 @@ def _mix_scene_audio(video_path: str, dialogue_paths: list[str], sfx_paths: list
         idx += 1
 
     mix_str = "".join(mix_inputs)
-    filters.append(f"{mix_str}amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=2[aout]")
+    filters.append(f"{mix_str}amix=inputs={len(mix_inputs)}:duration=longest:dropout_transition=0:normalize=0[aout]")
 
     _run_ffmpeg(
         inputs + [
             "-filter_complex", ";".join(filters),
-            "-map", "0:v", "-map", "[aout]",
-            "-c:v", "copy", "-c:a", "aac",
+            "-map", "0:v:0", "-map", "[aout]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-shortest",
             output_path,
         ],
@@ -197,11 +213,25 @@ def _mix_scene_audio(video_path: str, dialogue_paths: list[str], sfx_paths: list
 
 def _add_silent_audio(video_path: str, output_path: str):
     """Replace video's audio with a silent track (mutes any built-in audio from Kie.ai)."""
+    # Get video duration first so we generate exactly the right amount of silence
+    probe = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", video_path],
+        capture_output=True, text=True, timeout=10,
+    )
+    import json as _json
+    duration = 10.0
+    if probe.returncode == 0:
+        try:
+            duration = float(_json.loads(probe.stdout).get("format", {}).get("duration", 10))
+        except Exception:
+            pass
+
     _run_ffmpeg([
         "-i", video_path,
-        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-        "-map", "0:v", "-map", "1:a",
-        "-c:v", "copy", "-c:a", "aac", "-shortest",
+        "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={duration}",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "copy", "-c:a", "aac",
+        "-shortest",
         output_path,
     ], desc="replace with silent audio")
 
