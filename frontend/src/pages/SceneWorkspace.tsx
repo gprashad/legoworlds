@@ -305,6 +305,16 @@ export function SceneWorkspace() {
           <DescriptionForm
             value={(scene.structured_description || {}) as StructuredDescription}
             onChange={handleDescriptionChange}
+            canAutofill={Boolean(scene.scene_bible?.['_narration_intelligence'])}
+            onAutofill={async () => {
+              if (!id) return
+              const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/scenes/${id}/autofill-brief`, { method: 'POST' })
+              if (res.ok) {
+                const data = await res.json()
+                await updateScene(id, { structured_description: data.structured_description })
+                setScene(prev => prev ? { ...prev, structured_description: data.structured_description } : prev)
+              }
+            }}
           />
         </section>
 

@@ -4,12 +4,15 @@ import type { StructuredDescription } from '../../types/shotlist'
 interface DescriptionFormProps {
   value: StructuredDescription
   onChange: (value: StructuredDescription) => void
+  canAutofill?: boolean
+  onAutofill?: () => Promise<void> | void
 }
 
 const MOODS = ['action', 'comedy', 'drama', 'mystery', 'adventure', 'thriller']
 
-export function DescriptionForm({ value, onChange }: DescriptionFormProps) {
+export function DescriptionForm({ value, onChange, canAutofill, onAutofill }: DescriptionFormProps) {
   const [local, setLocal] = useState<StructuredDescription>(value)
+  const [autofilling, setAutofilling] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -24,16 +27,35 @@ export function DescriptionForm({ value, onChange }: DescriptionFormProps) {
   }
 
   const charCount = (local.what_happens || '').length + (local.one_liner || '').length
+  const isEmpty = !local.one_liner && !local.characters && !local.what_happens
+
+  const handleAutofill = async () => {
+    if (!onAutofill) return
+    setAutofilling(true)
+    try { await onAutofill() } finally { setAutofilling(false) }
+  }
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-1">
-          The Brief
-        </h2>
-        <p className="text-xs text-text-secondary">
-          Your words become the director's notes. Claude will turn this into a cinematic trailer.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-1">
+            The Brief
+          </h2>
+          <p className="text-xs text-text-secondary">
+            Your words become the director's notes. Claude will turn this into a cinematic trailer.
+          </p>
+        </div>
+        {canAutofill && isEmpty && (
+          <button
+            type="button"
+            onClick={handleAutofill}
+            disabled={autofilling}
+            className="shrink-0 text-xs px-3 py-1.5 bg-accent/15 text-accent border border-accent/40 rounded-lg hover:bg-accent/25 transition-colors disabled:opacity-50 font-medium"
+          >
+            {autofilling ? 'Filling...' : '✨ Fill from my narration'}
+          </button>
+        )}
       </div>
 
       {/* One liner */}

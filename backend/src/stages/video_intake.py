@@ -348,10 +348,48 @@ async def process_video_intake(scene_id: str, video_storage_path: str) -> dict:
         # Store the original video path for Claude Vision to use in scene analysis
         # Store narration intelligence as metadata
         update_fields = {}
-        if backstory:
-            scene = sb.table("scenes").select("backstory").eq("id", scene_id).execute().data[0]
-            if not scene.get("backstory"):
-                update_fields["backstory"] = backstory
+        existing_scene = sb.table("scenes").select("backstory,structured_description").eq("id", scene_id).execute().data[0]
+        if backstory and not existing_scene.get("backstory"):
+            update_fields["backstory"] = backstory
+
+        # Auto-populate the Brief from narration intelligence (only if user hasn't filled it in)
+        existing_sd = existing_scene.get("structured_description") or {}
+        if intelligence and not any(existing_sd.get(k) for k in ("one_liner", "characters", "what_happens")):
+            chars = intelligence.get("characters", [])
+            char_lines = []
+            for c in chars:
+                name = c.get("name", "").strip()
+                desc = c.get("description", "").strip()
+                personality = c.get("personality", "").strip()
+                if name:
+                    line = name
+                    if desc:
+                        line += f" — {desc}"
+                    if personality:
+                        line += f" ({personality})"
+                    char_lines.append(line)
+
+            beats = intelligence.get("story_beats") or {}
+            setup = (beats.get("setup") or "").strip()
+            conflict = (beats.get("conflict") or "").strip()
+            stakes = (beats.get("stakes") or "").strip()
+            what_happens = " ".join(p for p in [setup, conflict, stakes] if p)
+
+            # Pull a one-liner: prefer conflict, fall back to first sentence of backstory
+            one_liner = ""
+            if conflict:
+                one_liner = conflict.split(". ")[0].strip().rstrip(".")
+            elif backstory:
+                one_liner = backstory.split(". ")[0].strip().rstrip(".")
+
+            auto_sd = {
+                **existing_sd,
+                "one_liner": one_liner or existing_sd.get("one_liner", ""),
+                "characters": "\n".join(char_lines) if char_lines else existing_sd.get("characters", ""),
+                "what_happens": what_happens or existing_sd.get("what_happens", ""),
+                "mood": existing_sd.get("mood", ""),
+            }
+            update_fields["structured_description"] = auto_sd
 
         # Store video intelligence in scene_bible temporarily
         # (will be overwritten by proper scene analysis, but enriches it)
