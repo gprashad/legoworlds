@@ -47,20 +47,61 @@ SCENE_BIBLE_SCHEMA = """{
 }"""
 
 
+MAX_PHOTOS_FOR_CLAUDE = 10
+MAX_PHOTO_BYTES = 2_500_000  # ~2.5MB raw per photo (base64 adds ~33%)
+MAX_TOTAL_BASE64_BYTES = 18_000_000  # leave headroom under Claude's 20MB ceiling
+
+
+def _resize_with_ffmpeg(data: bytes, ext: str, max_width: int = 1280) -> bytes:
+    """Resize an image using ffmpeg; returns original bytes on failure."""
+    import os, subprocess, tempfile
+    try:
+        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as inf:
+            inf.write(data)
+            in_path = inf.name
+        out_path = in_path + ".out.jpg"
+        res = subprocess.run(
+            ["ffmpeg", "-y", "-i", in_path, "-vf", f"scale='min({max_width},iw)':-2", "-q:v", "4", out_path],
+            capture_output=True, timeout=15,
+        )
+        if res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+            with open(out_path, "rb") as f:
+                return f.read()
+    except Exception as e:
+        logger.warning(f"ffmpeg resize failed: {e}")
+    finally:
+        for p in (locals().get("in_path"), locals().get("out_path")):
+            if p and os.path.exists(p):
+                try: os.remove(p)
+                except Exception: pass
+    return data
+
+
 async def download_photos_as_base64(scene_id: str) -> list[dict]:
-    """Download all photos from Supabase Storage and return as base64 with media types."""
+    """Download photos from Supabase Storage, resize oversized ones, cap the count,
+    and return base64-encoded with media types. Prefers user uploads over video-extracted frames."""
     sb = get_supabase()
     folder = f"scenes/{scene_id}/input"
     files = sb.storage.from_(SUPABASE_STORAGE_BUCKET).list(folder)
 
-    photos = []
-    for f in files:
+    # Separate uploaded originals (IMG_*) from video-extracted frames (vframe_*/key_*/reg_*)
+    image_files = [f for f in files if f["name"].lower().endswith((".jpg", ".jpeg", ".png", ".webp"))]
+
+    def is_extracted(n: str) -> bool:
+        ln = n.lower()
+        return ln.startswith("vframe_") or ln.startswith("key_") or ln.startswith("reg_") or ln.startswith("frame_")
+
+    uploads = [f for f in image_files if not is_extracted(f["name"])]
+    extracted = [f for f in image_files if is_extracted(f["name"])]
+    ordered = uploads + extracted  # uploads first
+
+    photos: list[dict] = []
+    total_b64 = 0
+
+    for f in ordered:
+        if len(photos) >= MAX_PHOTOS_FOR_CLAUDE:
+            break
         name = f["name"]
-        if not name.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-            continue
-
-        data = sb.storage.from_(SUPABASE_STORAGE_BUCKET).download(f"{folder}/{name}")
-
         ext = name.rsplit(".", 1)[-1].lower()
         media_type = {
             "jpg": "image/jpeg",
@@ -69,13 +110,28 @@ async def download_photos_as_base64(scene_id: str) -> list[dict]:
             "webp": "image/webp",
         }.get(ext, "image/jpeg")
 
+        data = sb.storage.from_(SUPABASE_STORAGE_BUCKET).download(f"{folder}/{name}")
+
+        # Resize if oversized
+        if len(data) > MAX_PHOTO_BYTES:
+            before = len(data)
+            data = _resize_with_ffmpeg(data, ext)
+            logger.info(f"Resized {name}: {before} -> {len(data)} bytes")
+            media_type = "image/jpeg"
+
+        b64 = base64.b64encode(data).decode()
+        if total_b64 + len(b64) > MAX_TOTAL_BASE64_BYTES:
+            logger.info(f"Photo budget reached; stopping after {len(photos)} photos")
+            break
+        total_b64 += len(b64)
+
         photos.append({
-            "base64": base64.b64encode(data).decode(),
+            "base64": b64,
             "media_type": media_type,
             "filename": name,
         })
 
-    logger.info(f"Downloaded {len(photos)} photos for scene {scene_id}")
+    logger.info(f"Downloaded {len(photos)} photos for scene {scene_id} ({total_b64} b64 bytes, capped at {MAX_PHOTOS_FOR_CLAUDE})")
     return photos
 
 
