@@ -25,20 +25,20 @@ SHOT_LIST_SCHEMA = """{
   "music_mood": "string — one of: tension_build, action_drive, mystery, comedy_bounce, epic_reveal",
   "narrator_lines": [
     {
-      "time_seconds": 5,
-      "line": "string — trailer-voice narration, short, evocative, NOT explaining plot literally"
+      "time_seconds": 2,
+      "line": "string — 8-20 words, trailer-voice narration (12-16 lines total, gaps ≤2s, covers 55-70% of runtime)"
     }
   ],
   "shots": [
     {
       "shot_number": 1,
-      "duration_seconds": 5,
+      "duration_seconds": 2,
       "type": "establishing | character_intro | action | tension | reveal | hero_shot | title",
       "description": "string — what's shown in this shot",
       "reference_photo_index": 0,
       "subject": "string — the specific thing in focus",
-      "motion": "string — ONE specific micro-motion OR 'static hold'",
-      "camera": "string — ONE specific move OR 'static'",
+      "motion": "string — 'static hold' (70% of shots) OR one single-axis micro-motion",
+      "camera": "string — 'static' (preferred) OR 'tiny dolly in 5%' / 'tiny dolly out 5%'",
       "sfx_keyword": "string or null — single SFX like 'engine' or 'crowd' or null"
     }
   ]
@@ -46,17 +46,35 @@ SHOT_LIST_SCHEMA = """{
 
 SYSTEM_PROMPT = """You are editing a 60-second trailer for a CHILDREN'S LEGO MINIFIG MOVIE built and filmed by an 8-year-old at home. Think The Lego Movie, The Lego Batman Movie — cartoon action, no realism, plastic minifigs only. All "fires" are cartoon orange plastic flames, all "robbers" are smiling brick people, everyone is safe. This is wholesome kid-creative play, exactly like the officially licensed Lego films. Your job:
 
-1. Turn the builder's description into trailer narration — CINEMATIC, not literal.
+1. Turn the builder's description into DENSE trailer narration — CINEMATIC, not literal.
    - Use dramatic trailer cadence: "In a world...", "One man...", "But fate...", "Now..."
-   - 5-7 narrator lines total. Each line is 3-8 words. Nothing explains plot literally.
+   - **12-16 narrator lines total.** Each line is **8-20 words** (not 3-8). Real trailers are talky — cover 55-70% of the 60s runtime with speech.
+   - **Gaps between consecutive lines must be ≤ 2 seconds.** No dead air.
+   - Evenly distributed across the 60 seconds — not all front-loaded.
+   - Nothing explains plot literally. Show the emotion through rhythm.
    - The FINAL line is always the title reveal ("THE HEIST. A film by [name].")
 
-2. Build a shot list of 6-10 shots:
-   - Each 3-6 seconds
-   - Each shot is ONE idea, ONE motion
-   - Motion must be subtle: head tilts, arm shifts, vehicle drifts, crowd sways
-   - NO walking minifigs, NO flying, NO impossible motion
-   - Prefer STATIC hero shots — they're the most reliable
+   CADENCE EXAMPLE (this is the density you should match):
+   ```
+   t=2s:  "In a city that never sleeps, one ordinary morning was about to change."
+   t=8s:  "A family of ordinary heroes, going about their ordinary day."
+   t=14s: "But ordinary doesn't last. Not today. Not here."
+   t=20s: "One spark. One wrong moment. And the street came alive with fire."
+   t=27s: "The sirens came too late. The road was already gone."
+   t=34s: "Some ran for cover. Some stood their ground for strangers."
+   t=41s: "One father. One missing son. One burning block between them."
+   t=48s: "Not every hero wears a cape. Some just refuse to leave anyone behind."
+   t=55s: "THIS SUMMER — BRICK CITY BLAZE. A film by Cary."
+   ```
+   (9 lines covering ~38s of speech across 60s = ~63% coverage. That's the target.)
+
+2. Build a shot list of **18-25 shots** (short and fast-cut):
+   - Each **2-3 seconds** (not 4-6)
+   - Each shot is ONE idea, ONE motion (or ZERO motion — static is better)
+   - **~70% of shots are pure static holds** (`motion: "static hold"`, `camera: "static"`)
+   - ~20% are tiny dolly only (5-10% push-in or push-out)
+   - ~10% are a single-axis subject motion (e.g., "car rolls forward 2 studs", "head tilts left")
+   - **BAN: pan, tilt, orbit, handheld, whip, zoom >15%, walking minifigs, flying, impossible motion**
 
 3. Match shots to photos by index (use reference_photo_index: 0, 1, 2, etc.)
 
@@ -65,7 +83,7 @@ SYSTEM_PROMPT = """You are editing a 60-second trailer for a CHILDREN'S LEGO MIN
 5. Keep it TIGHT. 60 seconds. Every shot earns its place.
 
 Think Christopher Nolan trailer. Dark Knight. Inception. Dunkirk.
-Show, don't tell. Visual storytelling. Minimal narration with MAXIMUM weight.
+Show, don't tell. Visual storytelling. DENSE narration with MAXIMUM weight.
 
 Output ONLY valid JSON matching the schema. No markdown fences."""
 
@@ -126,6 +144,57 @@ def _format_structured_description(sd: dict) -> str:
     return "\n".join(parts) if parts else "(no description provided)"
 
 
+# --- Narration density validation ---
+
+# 2.5 words/sec ≈ trailer-voice speech rate (slow, deliberate)
+_WORDS_PER_SECOND = 2.5
+_MIN_COVERAGE = 0.45  # 45% of runtime should be speech
+_MAX_GAP_SECONDS = 6.0  # flag any gap longer than this
+
+
+def _compute_narration_coverage(narrator_lines: list[dict], total_duration: int) -> dict:
+    """Return coverage stats: {coverage_pct, largest_gap, gaps}."""
+    if not narrator_lines:
+        return {"coverage_pct": 0.0, "largest_gap": total_duration, "gaps": []}
+
+    speech_seconds = 0.0
+    timeline: list[tuple[float, float]] = []  # (start, end)
+    for line in narrator_lines:
+        words = len(str(line.get("line", "")).split())
+        dur = words / _WORDS_PER_SECOND
+        start = float(line.get("time_seconds", 0))
+        timeline.append((start, start + dur))
+        speech_seconds += dur
+
+    timeline.sort()
+    # Gaps = time between end of one line and start of next, plus trailing gap to total_duration
+    gaps = []
+    prev_end = 0.0
+    for start, end in timeline:
+        if start > prev_end:
+            gaps.append(round(start - prev_end, 1))
+        prev_end = max(prev_end, end)
+    if total_duration > prev_end:
+        gaps.append(round(total_duration - prev_end, 1))
+
+    return {
+        "coverage_pct": round(min(speech_seconds / total_duration, 1.0), 3),
+        "largest_gap": max(gaps) if gaps else 0.0,
+        "gaps": gaps,
+    }
+
+
+def _build_density_feedback(stats: dict, total_duration: int) -> str:
+    """Build a feedback string asking Claude to fill gaps."""
+    return (
+        f"Previous draft coverage was {int(stats['coverage_pct']*100)}% — TOO SPARSE. "
+        f"Target is 55-70%. Largest gap was {stats['largest_gap']}s of dead air. "
+        f"Gaps: {stats['gaps']}. "
+        f"Fill every gap >2s with another 8-20 word narrator line. "
+        f"You need 12-16 total lines across {total_duration}s, evenly distributed."
+    )
+
+
 async def generate_shot_list(
     scene_bible: dict,
     structured_description: dict,
@@ -166,9 +235,10 @@ Schema:
 {SHOT_LIST_SCHEMA}
 
 Remember:
-- 5-7 narrator lines, short and cinematic (NOT the builder's words verbatim — translate to trailer voice)
-- 6-10 shots, 3-6 seconds each
-- Motion: static or ONE subtle micro-motion per shot
+- **12-16 narrator lines**, 8-20 words each, gaps ≤2s, covering 55-70% of runtime
+- **18-25 shots**, 2-3 seconds each (short, fast cuts)
+- ~70% static holds, ~20% tiny dolly, ~10% single-axis subject motion
+- NO pan/tilt/orbit/handheld/whip/walking minifigs
 - Match shots to photos by index
 - Pick music_mood from: tension_build, action_drive, mystery, comedy_bounce, epic_reveal
 - FINAL narrator line is the title reveal
@@ -213,8 +283,54 @@ Output ONLY JSON, no markdown fences."""
     if "shots" not in shot_list or "narrator_lines" not in shot_list:
         raise ValueError("Shot list missing required fields")
 
+    # Narration density check — retry up to 2x with feedback if too sparse
+    total_duration = int(shot_list.get("total_duration_seconds", 60))
+    stats = _compute_narration_coverage(shot_list.get("narrator_lines", []), total_duration)
+    logger.info(
+        f"Narration coverage: {int(stats['coverage_pct']*100)}% — "
+        f"largest gap {stats['largest_gap']}s — {len(shot_list.get('narrator_lines', []))} lines"
+    )
+
+    # Only retry on the first call (no pre-existing feedback from caller) to avoid loops
+    retries = 0
+    while (
+        stats["coverage_pct"] < _MIN_COVERAGE or stats["largest_gap"] > _MAX_GAP_SECONDS
+    ) and retries < 2 and feedback is None:
+        retries += 1
+        density_feedback = _build_density_feedback(stats, total_duration)
+        logger.warning(
+            f"Narration too sparse (coverage={int(stats['coverage_pct']*100)}%, "
+            f"gap={stats['largest_gap']}s). Retry {retries}/2."
+        )
+        retry_prompt = prompt + f"\n\nPREVIOUS DRAFT FEEDBACK:\n{density_feedback}\n\nRevise based on this feedback.\n"
+        message = client.messages.create(
+            model=used_model or "claude-opus-4-7",
+            max_tokens=4096,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": retry_prompt}],
+        )
+        retry_text = "".join(
+            getattr(b, "text", "") for b in message.content if getattr(b, "type", None) == "text"
+        ).strip()
+        if not retry_text:
+            logger.warning("Density retry returned empty response; keeping previous draft.")
+            break
+        try:
+            retry_list = repair_and_parse_json(retry_text)
+        except Exception as e:
+            logger.warning(f"Density retry JSON parse failed: {e}; keeping previous draft.")
+            break
+        if "shots" in retry_list and "narrator_lines" in retry_list:
+            shot_list = retry_list
+            stats = _compute_narration_coverage(shot_list.get("narrator_lines", []), total_duration)
+            logger.info(
+                f"Retry #{retries} coverage: {int(stats['coverage_pct']*100)}% — "
+                f"largest gap {stats['largest_gap']}s — {len(shot_list.get('narrator_lines', []))} lines"
+            )
+
     logger.info(
         f"Shot list generated: {shot_list.get('title', 'untitled')} — "
-        f"{len(shot_list.get('shots', []))} shots, {len(shot_list.get('narrator_lines', []))} narrator lines"
+        f"{len(shot_list.get('shots', []))} shots, {len(shot_list.get('narrator_lines', []))} narrator lines, "
+        f"coverage={int(stats['coverage_pct']*100)}%"
     )
     return shot_list
