@@ -47,10 +47,11 @@ KIE_BASE = "https://api.kie.ai"
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 
-# Video model on Kie.ai. "kling-v2-1-pro" = Kling 2.1 Pro (negative_prompt +
-# cfg_scale + tail_image_url, $0.25/5s). "veo3_fast" = the old path, kept as
-# fallback behind env var.
-KIE_VIDEO_MODEL = os.getenv("KIE_VIDEO_MODEL", "kling-v2-1-pro")
+# Video model on Kie.ai. "veo3_fast" = Veo3 Fast (prompt-dominant, better for
+# choreographed motion — chosen after 2026-04-17 A/B vs Kling). "kling-v2-1-pro"
+# = Kling 2.1 Pro (image-dominant, too static for our use case) kept behind env
+# var for future regression tests.
+KIE_VIDEO_MODEL = os.getenv("KIE_VIDEO_MODEL", "veo3_fast")
 # Kling cfg_scale: 0-1, default 0.5. Crank for strict first-frame adherence.
 KLING_CFG_SCALE = float(os.getenv("KLING_CFG_SCALE", "0.8"))
 
@@ -169,16 +170,16 @@ def _build_visual_prompt(scene_bible: dict, screenplay_scene: dict) -> str:
 
 # LEGO physics rules prepended to every shot prompt. Keep tight — Kling has
 # a 5000-char prompt cap and these rules should leave room for scene-specific detail.
-LEGO_PHYSICS_PREAMBLE = """This is stop-motion LEGO animation — NOT cinematic video. RULES:
-- Every object is a hard plastic LEGO piece. Pieces do not deform, stretch, or morph.
-- Minifigures have stiff plastic bodies. They rotate only at head, arms, and waist.
-  They do NOT walk smoothly — they hold still or snap to the next pose.
-- Vehicles roll on their wheels in their facing direction only. No sideways sliding.
-- Base plates are glued to the table. They DO NOT move, rotate, lift, or tilt.
-- Nothing disappears. Every minifig and piece visible at frame 0 is visible at the final frame.
-- No new objects, minifigs, or animals appear that were not in the reference photo.
-- Lighting and camera angle are LOCKED unless the CAMERA section explicitly moves them.
-- Visual style: plastic sheen, matte table surface, handmade stop-motion feel, slight fingerprint imperfection."""
+LEGO_PHYSICS_PREAMBLE = """This is stop-motion LEGO animation at ~12fps — SNAPPY, discrete motion that FEELS hand-posed, NOT smooth CGI. RULES:
+- Every object is a rigid plastic LEGO piece. Pieces DO NOT deform, stretch, melt, or morph.
+- Motion happens in crisp stop-motion beats. Things DO move — just in confident pose-to-pose increments, like hand-posed frame-by-frame animation.
+- Minifigures rotate at head, arms, waist; legs swing at the hips in discrete poses. No smooth cinematic walks — they snap between stances.
+- Vehicles ROLL forward on their wheels in their facing direction. Rolling is expected and good. Sideways sliding is forbidden.
+- Base plates stay planted on the table. They DO NOT lift, float, or tilt on their own.
+- Nothing disappears. Every minifig and piece visible at frame 0 is still in frame at the end.
+- No new minifigs, animals, or props appear that were not in the reference photo.
+- Camera moves follow the CAMERA section. When the CAMERA says "static-locked," the lens does not drift; otherwise the move is slow, deliberate, stop-motion-appropriate.
+- Visual style: plastic sheen, matte table surface, handmade stop-motion feel, slight fingerprint imperfection, 12fps choppy-rigid motion — NOT smooth 24fps cinema."""
 
 
 # Passed to Kling as the `negative_prompt` param (≤500 chars).
@@ -231,19 +232,133 @@ def _find_subject_in_bible(subject: str, scene_bible: dict) -> str | None:
     return None
 
 
+# Per-shot-type defaults used when the shot_list didn't emit beats/tempo.
+# Every entry is: (default_camera, default_tempo, default_motion_verb_template, default_beats_template).
+# Beats use "{subject}" as a placeholder for the shot's subject line.
+_SHOT_TYPE_LIBRARY: dict[str, dict] = {
+    "establishing": {
+        "camera": "slow dolly in 5%",
+        "tempo": "measured",
+        "motion": "ambient breeze drifts through the scene, tiny props flicker",
+        "beats": [
+            ("wide lens, camera begins its slow push toward the scene", "scene breathes — small ambient flickers (steam, smoke, flag)"),
+            ("camera continues the slow 5% push, framing tightens slightly", "a single element catches light — a flame, a reflection, a minifig's head turn"),
+        ],
+    },
+    "character_intro": {
+        "camera": "rack focus pull",
+        "tempo": "suspended",
+        "motion": "head snaps toward camera, eyes lock on lens",
+        "beats": [
+            ("foreground piece in sharp focus, {subject} is blurry in the mid-ground", "{subject} is still, looking down or away"),
+            ("rack pulls — {subject} snaps into focus, foreground goes soft", "{subject}'s head snaps up, eyes toward lens, expression set"),
+        ],
+    },
+    "reveal": {
+        "camera": "arc 15° around subject",
+        "tempo": "propulsive",
+        "motion": "subject emerges — ignites, opens, or rotates into view",
+        "beats": [
+            ("camera starts wide-left, {subject} partially hidden by an occluder", "{subject} is poised, about to act"),
+            ("camera arcs 15° around, occluder clears — full reveal", "{subject} ignites / opens / rotates forward, prop catches the light"),
+        ],
+    },
+    "action": {
+        "camera": "tracking lateral slow",
+        "tempo": "propulsive",
+        "motion": "rolls, swings, or lunges forward in stop-motion beats",
+        "beats": [
+            ("camera locks beside {subject}, matched to its motion path", "{subject} begins the motion — a first stop-motion pose"),
+            ("camera continues the lateral track, frame moves with subject", "{subject} completes the action in 2-3 discrete snappy poses"),
+        ],
+    },
+    "tension": {
+        "camera": "dutch tilt-in 5°",
+        "tempo": "urgent",
+        "motion": "head snaps toward threat, body stiffens",
+        "beats": [
+            ("camera level, {subject} calm in frame", "{subject} is still, unaware"),
+            ("camera tilts 5° Dutch over the duration, frame becomes uneasy", "{subject}'s head snaps toward the threat, body stiffens"),
+        ],
+    },
+    "hero_shot": {
+        "camera": "slow dolly out 5-10%",
+        "tempo": "slow",
+        "motion": "stands firm, chest out, minor pose adjustment",
+        "beats": [
+            ("camera tight on {subject}, hero-centered", "{subject} adjusts stance, squares shoulders"),
+            ("camera pulls out 5-10%, {subject} grows in epic proportion in the wider frame", "{subject} holds the pose — a single beat of arrival"),
+        ],
+    },
+    "title": {
+        "camera": "static-locked",
+        "tempo": "suspended",
+        "motion": "final flame flicker or piece settle before the title card lands",
+        "beats": [
+            ("camera static, frame composed for the title card", "last living element flickers or settles — flame, smoke, hair piece"),
+            ("camera holds dead-still", "scene is frozen, awaiting the title overlay (which is added in post, not in-clip)"),
+        ],
+    },
+}
+
+
+def _default_shot_library(shot_type: str) -> dict:
+    """Fallback motion library entry; defaults to 'establishing' if unknown type."""
+    return _SHOT_TYPE_LIBRARY.get((shot_type or "").lower()) or _SHOT_TYPE_LIBRARY["establishing"]
+
+
+def _format_beats(beats: list[dict] | None, duration: float, subject: str, shot_type: str) -> str:
+    """Render beats[] into a numbered timeline string.
+    Falls back to the shot-type motion library if the shot didn't emit beats."""
+    if beats and isinstance(beats, list):
+        lines = []
+        for i, b in enumerate(beats, start=1):
+            t_start = b.get("t_start", 0)
+            t_end = b.get("t_end", duration)
+            cam = str(b.get("camera_state", "")).strip() or "camera holds its current state"
+            act = str(b.get("subject_action", "")).strip() or "subject holds pose"
+            lines.append(f"  Beat {i} (t={t_start}-{t_end}s):")
+            lines.append(f"    CAMERA: {cam}")
+            lines.append(f"    SUBJECT: {act}")
+        return "\n".join(lines)
+
+    # Fallback: synthesize beats from the shot-type library
+    lib = _default_shot_library(shot_type)
+    n = len(lib["beats"])
+    step = duration / max(n, 1)
+    lines = []
+    for i, (cam_tpl, act_tpl) in enumerate(lib["beats"], start=1):
+        t_start = round((i - 1) * step, 1)
+        t_end = round(i * step, 1)
+        cam = cam_tpl.replace("{subject}", subject)
+        act = act_tpl.replace("{subject}", subject)
+        lines.append(f"  Beat {i} (t={t_start}-{t_end}s):")
+        lines.append(f"    CAMERA: {cam}")
+        lines.append(f"    SUBJECT: {act}")
+    return "\n".join(lines)
+
+
 def build_nolan_shot_prompt(
     shot: dict,
     scene_bible: dict,
     photo_filename: str | None = None,
 ) -> str:
-    """Build a TIGHT prompt for a single shot. LEGO physics preamble + Nolan-style constraints.
+    """Build a TIGHT prompt for a single shot. LEGO physics preamble + Nolan-style beat timeline.
     Works with either Kling or Veo3; the negative prompt is passed separately via the API."""
 
     subject = shot.get("subject", "the scene")
-    motion = shot.get("motion", "static hold")
-    camera = shot.get("camera", "static")
     description = shot.get("description", "")
-    duration = shot.get("duration_seconds", 5)
+    duration = shot.get("duration_seconds", 3)
+    shot_type = shot.get("type", "establishing")
+
+    # Pull shot-type defaults so we have sane fallbacks
+    lib = _default_shot_library(shot_type)
+
+    # Motion / camera / tempo with shot-list-wins-over-library precedence
+    motion = shot.get("motion") or lib["motion"]
+    camera = shot.get("camera") or lib["camera"]
+    tempo = shot.get("tempo") or lib["tempo"]
+    beats = shot.get("beats")
 
     # Subject lock-in: pull exact visual_details from scene_bible.cast if subject matches
     subject_locked = _find_subject_in_bible(subject, scene_bible) or subject
@@ -271,13 +386,16 @@ def build_nolan_shot_prompt(
 
     visual_text = "\n".join(visual_anchor)
 
+    beats_text = _format_beats(beats, duration, subject_locked, shot_type)
+
     prompt = f"""[LEGO PHYSICS]
 {LEGO_PHYSICS_PREAMBLE}
 
+[SHOT TYPE]
+{shot_type} — {duration} seconds of choreographed stop-motion. Tempo: {tempo}.
+
 [SUBJECT]
-A SINGLE SHOT, {duration} seconds, MINIMAL motion.
 Focus: {subject_locked}.
-{subject_locked} stays in the same position throughout this shot unless the ALLOWED MOTION section says otherwise.
 {description}
 
 [EXACT VISUAL MATCH — DO NOT DEVIATE]
@@ -285,20 +403,26 @@ The frame shows exactly what is in the reference photo. Same Lego pieces, same c
 same positions, same baseplate. Do NOT add, remove, or change any elements.
 {visual_text}
 
-[ALLOWED MOTION — ONLY THIS]
-{motion}.
-Nothing else in the frame moves. The baseplate, buildings, vehicles, and props are STATIC
-unless the motion above specifies otherwise.
+[CAMERA LANGUAGE]
+Camera move: {camera}.
+The move is slow, deliberate, and stop-motion-appropriate. No shake, no swoop, no impossible angles.
+Pick ONLY from: static-locked, slow dolly in 5-10%, slow dolly out 5-10%, rack focus pull, arc 15° around subject, tracking lateral slow, dutch tilt-in 5°, handheld-locked (no drift).
 
-[CAMERA]
-{camera}.
-No shake, no swoop, no impossible angles. Camera stays fixed unless this line says otherwise.
+[PRIMARY MOTION]
+{motion}.
+This is the shot's defining action. Make it happen with snappy stop-motion beats, not smooth CGI glide.
+Background elements stay anchored — baseplate, buildings, and non-active props are STATIC.
+
+[BEAT TIMELINE — the shot choreographed second-by-second]
+{beats_text}
+
+Execute these beats in order across the clip. Each beat is a discrete stop-motion pose — snap between beats, do not smoothly tween.
 
 [STYLE]
 Stop-motion Lego aesthetic. Real Lego bricks on a real baseplate.
 {f'Lighting: {lighting_hint}.' if lighting_hint else 'Warm cinematic lighting matching the reference photo.'}
 Shallow depth of field with focus on {subject_locked}.
-Film grain. 24fps. 16:9 aspect ratio.
+Film grain. 16:9 aspect ratio. Motion cadence feels like 12fps stop-motion even if rendered at 24fps — choppy-rigid, not smooth.
 {NOLAN_FORBIDDEN}
 """
 

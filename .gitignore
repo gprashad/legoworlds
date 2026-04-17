@@ -29,6 +29,10 @@ build/
 /tmp/
 *.tmp
 
+# A/B test output (local only, written by backend/scripts/ab_kling_vs_veo.py)
+/kling/
+/veo3/
+
 # Supabase
 .supabase/
 

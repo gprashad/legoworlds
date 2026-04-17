@@ -32,13 +32,18 @@ SHOT_LIST_SCHEMA = """{
   "shots": [
     {
       "shot_number": 1,
-      "duration_seconds": 2,
+      "duration_seconds": 3,
       "type": "establishing | character_intro | action | tension | reveal | hero_shot | title",
       "description": "string — what's shown in this shot",
       "reference_photo_index": 0,
-      "subject": "string — the specific thing in focus",
-      "motion": "string — 'static hold' (70% of shots) OR one single-axis micro-motion",
-      "camera": "string — 'static' (preferred) OR 'tiny dolly in 5%' / 'tiny dolly out 5%'",
+      "subject": "string — the specific thing in focus, WITH action (e.g., 'Marcus at the register, head snapping toward the flame')",
+      "motion": "string — MUST start with an action verb (rolls, turns, tilts, ignites, opens, pulls, snaps, swings, flickers, reveals, drifts, lowers). 'static hold' is FORBIDDEN.",
+      "camera": "string — pick ONE: static-locked | slow dolly in 5-10% | slow dolly out 5-10% | rack focus pull | arc 15° around subject | tracking lateral slow | dutch tilt-in 5° | handheld-locked (no drift)",
+      "tempo": "string — one of: slow | measured | propulsive | urgent | suspended",
+      "beats": [
+        {"t_start": 0.0, "t_end": 1.5, "camera_state": "string — where camera is at this beat", "subject_action": "string — what the subject does in this beat"},
+        {"t_start": 1.5, "t_end": 3.0, "camera_state": "string", "subject_action": "string"}
+      ],
       "sfx_keyword": "string or null — single SFX like 'engine' or 'crowd' or null"
     }
   ]
@@ -70,11 +75,32 @@ SYSTEM_PROMPT = """You are editing a 60-second trailer for a CHILDREN'S LEGO MIN
 
 2. Build a shot list of **18-25 shots** (short and fast-cut):
    - Each **2-3 seconds** (not 4-6)
-   - Each shot is ONE idea, ONE motion (or ZERO motion — static is better)
-   - **~70% of shots are pure static holds** (`motion: "static hold"`, `camera: "static"`)
-   - ~20% are tiny dolly only (5-10% push-in or push-out)
-   - ~10% are a single-axis subject motion (e.g., "car rolls forward 2 studs", "head tilts left")
-   - **BAN: pan, tilt, orbit, handheld, whip, zoom >15%, walking minifigs, flying, impossible motion**
+   - Each shot is ONE idea with CLEAR directed motion — NOT a still frame
+   - **Every `motion` string MUST start with an action verb.** `"static hold"` and `"none"` are BANNED.
+     Verbs to use: rolls forward 2 studs, turns head toward camera, tilts up 10°, ignites, opens slowly, pulls back, snaps toward threat, swings arm down, flickers, reveals under light, drifts in wind, lowers hand.
+   - **Every shot gets a `tempo` tag** drawn from the scene mood:
+     `slow` (contemplative hold) | `measured` (steady build) | `propulsive` (driving energy) | `urgent` (tense rising) | `suspended` (held breath)
+   - **Every shot gets a `beats` array** — 2 beats for 2s shots, 3 beats for 3s shots. Each beat specifies what the CAMERA is doing AND what the SUBJECT is doing in that ~1s window. This is the scaffolding the video model needs to choreograph motion.
+   - **Camera vocabulary — pick ONE per shot from this list only:**
+     `static-locked` · `slow dolly in 5-10%` · `slow dolly out 5-10%` · `rack focus pull` · `arc 15° around subject` · `tracking lateral slow` · `dutch tilt-in 5°` · `handheld-locked (no drift)`
+   - **BAN: pan, orbit, whip, zoom >15%, walking minifigs, flying, any impossible motion**
+
+   SHOT-TYPE MOTION LIBRARY (use these as defaults, adapt for subject):
+   - `establishing` → slow dolly in 5% + ambient flicker/breeze/steam in background
+   - `character_intro` → rack focus pull to subject + subject turns head or eyes toward camera
+   - `reveal` → arc 15° around subject + subject emerges from behind occluder or opens/ignites
+   - `action` → tracking lateral slow + subject rolls, swings, or lunges forward
+   - `tension` → dutch tilt-in 5° + subject head snaps toward threat
+   - `hero_shot` → slow dolly out 5-10% + subject stands firm as camera pulls away
+   - `title` → static-locked + a final flame flicker or piece settle before the title card
+
+   BEAT EXAMPLE (3s character_intro shot):
+   ```
+   beats: [
+     {"t_start": 0.0, "t_end": 1.5, "camera_state": "foreground brick in soft focus, Marcus blurry at register", "subject_action": "Marcus is still, head down, counting bills"},
+     {"t_start": 1.5, "t_end": 3.0, "camera_state": "rack pulls — Marcus snaps into focus, foreground goes soft", "subject_action": "Marcus's head snaps up, eyes toward camera, mouth set"}
+   ]
+   ```
 
 3. Match shots to photos by index (use reference_photo_index: 0, 1, 2, etc.)
 
@@ -237,8 +263,8 @@ Schema:
 Remember:
 - **12-16 narrator lines**, 8-20 words each, gaps ≤2s, covering 55-70% of runtime
 - **18-25 shots**, 2-3 seconds each (short, fast cuts)
-- ~70% static holds, ~20% tiny dolly, ~10% single-axis subject motion
-- NO pan/tilt/orbit/handheld/whip/walking minifigs
+- Every shot has an **action-verb motion**, a **tempo**, and a **beats array** (2-3 beats)
+- Camera picked from the 8-item vocabulary only (no pan/orbit/whip)
 - Match shots to photos by index
 - Pick music_mood from: tension_build, action_drive, mystery, comedy_bounce, epic_reveal
 - FINAL narrator line is the title reveal
