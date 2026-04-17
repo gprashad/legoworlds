@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 def repair_and_parse_json(text: str) -> dict:
-    """Attempt to parse JSON, with common repairs for LLM output."""
+    """Parse LLM-generated JSON with robust repair via the json_repair library."""
     # Strip markdown fences
     text = text.strip()
     if text.startswith("```"):
@@ -22,23 +22,21 @@ def repair_and_parse_json(text: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Extract JSON object if surrounded by other text
+    # Extract the outermost JSON object if surrounded by prose
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         text = match.group(0)
 
-    # Remove trailing commas before } or ]
-    text = re.sub(r',\s*([}\]])', r'\1', text)
-
-    # Remove single-line comments
-    text = re.sub(r'//[^\n]*', '', text)
-
-    # Fix unescaped newlines in strings (replace with \\n)
-    # This is a heuristic — won't catch all cases
-    text = re.sub(r'(?<=": ")(.*?)(?="[,\s\n}])', lambda m: m.group(0).replace('\n', '\\n'), text)
-
+    # Use the json_repair library — handles unclosed strings, missing commas,
+    # unescaped quotes, and most malformations that LLMs produce.
     try:
+        from json_repair import repair_json
+        repaired = repair_json(text, return_objects=True)
+        if isinstance(repaired, (dict, list)):
+            return repaired
+        # Fall through if it came back as a string
+        text = repair_json(text)
         return json.loads(text)
-    except json.JSONDecodeError as e:
+    except Exception as e:
         logger.error(f"JSON repair failed: {e}\nText: {text[:500]}")
         raise
