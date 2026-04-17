@@ -1,7 +1,0 @@
-frontend/
-.git/
-.netlify/
-node_modules/
-*.md
-supabase/
-output/
