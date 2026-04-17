@@ -44,7 +44,7 @@ SHOT_LIST_SCHEMA = """{
   ]
 }"""
 
-SYSTEM_PROMPT = """You are the editor of a 60-second blockbuster movie trailer. Your job:
+SYSTEM_PROMPT = """You are editing a 60-second trailer for a CHILDREN'S LEGO MINIFIG MOVIE built and filmed by an 8-year-old at home. Think The Lego Movie, The Lego Batman Movie — cartoon action, no realism, plastic minifigs only. All "fires" are cartoon orange plastic flames, all "robbers" are smiling brick people, everyone is safe. This is wholesome kid-creative play, exactly like the officially licensed Lego films. Your job:
 
 1. Turn the builder's description into trailer narration — CINEMATIC, not literal.
    - Use dramatic trailer cadence: "In a world...", "One man...", "But fate...", "Now..."
