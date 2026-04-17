@@ -265,6 +265,20 @@ def _concat_shots_hard_cuts(shot_paths: list[str], output_path: str):
     os.remove(list_file)
 
 
+def _compress_for_upload(input_path: str, output_path: str, crf: int = 26):
+    """Re-encode final video at a reasonable bitrate to stay under Supabase's
+    50MB per-file upload cap. CRF 26 + fast preset + faststart gives
+    ~10-20MB for a 60-second 1080p trailer at good visual quality."""
+    _run_ffmpeg([
+        "-i", input_path,
+        "-c:v", "libx264", "-preset", "fast", "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
+        "-movflags", "+faststart",
+        output_path,
+    ], desc=f"compress final (crf {crf})")
+
+
 def _apply_trailer_narrator_mix(
     video_path: str,
     music_path: str,
@@ -288,53 +302,108 @@ def _apply_trailer_narrator_mix(
             narrator_paths_ordered.append((line, narrator_files[key]["path"]))
             inputs.extend(["-i", narrator_files[key]["path"]])
 
+    # Probe video duration so we can strictly trim audio to it (otherwise
+    # late-timestamp narrator lines with adelay extend the mix past the video
+    # and ffmpeg muxing produces a duration mismatch + distortion).
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", video_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        import json as _json
+        video_duration = float(_json.loads(probe.stdout).get("format", {}).get("duration", 60))
+    except Exception:
+        video_duration = 60.0
+
     if not narrator_paths_ordered:
         # No narrator — just add music over video (muted original audio)
         _run_ffmpeg([
             "-i", video_path, "-i", music_path,
             "-filter_complex",
-            "[1:a]volume=0.5[music]",
+            f"[1:a]volume=0.5,atrim=end={video_duration},asetpts=PTS-STARTPTS,alimiter=limit=0.95[music]",
             "-map", "0:v:0", "-map", "[music]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest", output_path,
+            "-t", str(video_duration), output_path,
         ], desc="mix music only")
         return
 
     # Build filter:
-    # 1. Music at 40% baseline, ducked to 12% when narrator speaks
-    # 2. Each narrator line delayed to its timestamp
+    # 1. Each narrator line delayed to its timestamp, clamped to video duration
+    # 2. Music ducked under narration
+    # 3. Final limiter to catch any clipping (real music, not mute!)
+    #
+    # Gain staging: use amix normalize=0 so signal isn't divided by N inputs
+    # (normalize=1 was making the mix -17dB quieter per extra track and is why
+    # the previous output was inaudible at -48dB peak). The alimiter at the
+    # end catches any transient clipping.
     filters = []
 
-    # Delayed narrator tracks
+    # Delayed narrator tracks — ElevenLabs audio is already properly leveled
     narrator_mix_inputs = []
     for i, (line, _) in enumerate(narrator_paths_ordered):
-        delay_ms = int(line.get("time_seconds", i * 8) * 1000)
+        # Skip lines whose timestamp would start past the video
+        time_s = float(line.get("time_seconds", i * 8))
+        if time_s >= video_duration:
+            continue
+        delay_ms = int(time_s * 1000)
         idx = 2 + i
-        filters.append(f"[{idx}:a]volume=1.8,adelay={delay_ms}|{delay_ms}[n{i}]")
+        # Slight boost (1.3x ≈ +2.3dB) so trailer voice cuts through
+        filters.append(f"[{idx}:a]volume=1.3,adelay={delay_ms}|{delay_ms}[n{i}]")
         narrator_mix_inputs.append(f"[n{i}]")
 
-    # Combine all narrator tracks
-    narrator_mix_str = "".join(narrator_mix_inputs)
-    filters.append(f"{narrator_mix_str}amix=inputs={len(narrator_mix_inputs)}:duration=longest:normalize=0[narration]")
+    if not narrator_mix_inputs:
+        # All narrator lines were past end-of-video — fall back to music-only
+        _run_ffmpeg([
+            "-i", video_path, "-i", music_path,
+            "-filter_complex",
+            f"[1:a]volume=0.8,atrim=end={video_duration},asetpts=PTS-STARTPTS,alimiter=limit=0.95[music]",
+            "-map", "0:v:0", "-map", "[music]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-t", str(video_duration), output_path,
+        ], desc="mix music only (narrator out of range)")
+        return
 
-    # Music ducks under narration using sidechaincompress
+    # Combine narrator tracks — normalize=0 (no division), they rarely overlap
+    # since each line is delayed to a distinct timestamp. The final alimiter
+    # prevents clipping if two happen to collide.
+    # NOTE: we asplit [narration] because it's consumed by BOTH the
+    # sidechaincompress (as sidechain input) AND the final amix. A filter pad
+    # can only be consumed once; without asplit the second consumer gets an
+    # empty/silent signal — which is why narrator was going inaudible.
+    narrator_mix_str = "".join(narrator_mix_inputs)
+    if len(narrator_mix_inputs) == 1:
+        # Single narrator track — no amix needed
+        filters.append(
+            f"{narrator_mix_str}atrim=end={video_duration},asetpts=PTS-STARTPTS,"
+            f"asplit=2[narration_main][narration_sc]"
+        )
+    else:
+        filters.append(
+            f"{narrator_mix_str}amix=inputs={len(narrator_mix_inputs)}:duration=longest:normalize=0,"
+            f"atrim=end={video_duration},asetpts=PTS-STARTPTS,"
+            f"asplit=2[narration_main][narration_sc]"
+        )
+
+    # Music baseline 0.6, sidechain-ducked by narration_sc
     filters.append(
-        "[1:a]volume=0.4[music_pre];"
-        "[music_pre][narration]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=300[music_ducked]"
+        f"[1:a]volume=0.6,atrim=end={video_duration},asetpts=PTS-STARTPTS[music_pre];"
+        "[music_pre][narration_sc]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=300[music_ducked]"
     )
 
-    # Final mix: ducked music + narration
-    filters.append("[music_ducked][narration]amix=inputs=2:duration=longest:normalize=0[final_audio]")
-
-    # Apply reverb + loudness normalize on final audio
-    filters.append("[final_audio]aecho=0.8:0.7:60:0.25,loudnorm=I=-14:TP=-1.5:LRA=11[mixed]")
+    # Final mix: ducked music + narration (main copy), normalize=0 so signals
+    # add naturally, alimiter as clip safety net, trim to video length.
+    filters.append(
+        f"[music_ducked][narration_main]amix=inputs=2:duration=first:normalize=0,"
+        f"alimiter=level_in=1:level_out=1:limit=0.95:attack=5:release=50,"
+        f"atrim=end={video_duration},asetpts=PTS-STARTPTS[mixed]"
+    )
 
     _run_ffmpeg(
         inputs + [
             "-filter_complex", ";".join(filters),
             "-map", "0:v:0", "-map", "[mixed]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest", output_path,
+            "-t", str(video_duration), output_path,
         ],
         desc="trailer final mix",
     )
@@ -558,15 +627,29 @@ async def assemble_trailer(
 
         # --- 8. Final concat: title → mixed → end ---
         logger.info(f"[{scene_id}] Final assembly...")
+        raw_final = os.path.join(work_dir, "final_raw.mp4")
+        _concat_shots_hard_cuts([title_card, mixed, end_card], raw_final)
+
+        # --- 8b. Compress for upload (stay under Supabase 50MB cap) ---
         final_local = os.path.join(work_dir, "final.mp4")
-        _concat_shots_hard_cuts([title_card, mixed, end_card], final_local)
+        _compress_for_upload(raw_final, final_local, crf=26)
+        size_mb = os.path.getsize(final_local) / (1024 * 1024)
+        logger.info(f"[{scene_id}] Final compressed to {size_mb:.1f}MB")
+        # If still too big, re-encode harder
+        if size_mb > 45:
+            logger.warning(f"[{scene_id}] Final {size_mb:.1f}MB > 45MB, re-compressing at CRF 30")
+            harder = os.path.join(work_dir, "final_harder.mp4")
+            _compress_for_upload(final_local, harder, crf=30)
+            final_local = harder
+            size_mb = os.path.getsize(final_local) / (1024 * 1024)
+            logger.info(f"[{scene_id}] After re-compress: {size_mb:.1f}MB")
 
         # --- 9. Thumbnail ---
         thumb_local = os.path.join(work_dir, "thumbnail.jpg")
         _extract_thumbnail(final_local, thumb_local)
 
         # --- 10. Upload ---
-        logger.info(f"[{scene_id}] Uploading final trailer...")
+        logger.info(f"[{scene_id}] Uploading final trailer ({size_mb:.1f}MB)...")
         final_storage = f"scenes/{scene_id}/output/final.mp4"
         thumb_storage = f"scenes/{scene_id}/output/thumbnail.jpg"
 
