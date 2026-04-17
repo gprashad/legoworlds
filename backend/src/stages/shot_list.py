@@ -143,12 +143,20 @@ Output ONLY JSON, no markdown fences."""
     client = anthropic.Anthropic()
     message = client.messages.create(
         model="claude-opus-4-7",
-        max_tokens=3000,
+        max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    response_text = message.content[0].text.strip()
+    # Concatenate all text blocks (defensive against empty content / multi-block responses)
+    response_text = "".join(
+        getattr(b, "text", "") for b in message.content if getattr(b, "type", None) == "text"
+    ).strip()
+    if not response_text:
+        raise ValueError(
+            f"Shot list generation returned no text (stop_reason={getattr(message, 'stop_reason', '?')}, "
+            f"content_blocks={len(message.content)})"
+        )
     shot_list = repair_and_parse_json(response_text)
 
     # Validate basics
